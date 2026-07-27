@@ -2,14 +2,13 @@
 
 [English](README_EN.md)
 
-让 FFXIV 识别并正常使用官方 Nintendo Switch Pro 手柄的 Dalamud 插件。
+让最终幻想14识别并正常使用官方 Nintendo Switch Pro 手柄的 Dalamud 插件。
 
 插件直接读取手柄输入，只在 FFXIV 进程内生效，无需驱动、虚拟手柄或管理员权限。
 
 ## 功能
 
 - 支持 USB 和蓝牙连接。
-- 支持摇杆、十字键、面键、肩键、扳机、加减键及摇杆按下。
 - 支持交换 A/B、X/Y。
 - 左右摇杆死区可独立调整。
 - 支持游戏震动，并可在设置窗口中测试。
