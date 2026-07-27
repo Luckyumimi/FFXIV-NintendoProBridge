@@ -1,6 +1,6 @@
 # Nintendo Pro Bridge
 
-[中文](README.md)
+[简体中文](README.md) | [English](README_EN.md) | [日本語](README_JA.md) | [한국어](README_KO.md)
 
 A Dalamud plugin that lets FFXIV recognize and use an official Nintendo Switch Pro Controller.
 

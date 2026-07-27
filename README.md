@@ -1,6 +1,6 @@
 # Nintendo Pro Bridge
 
-[English](README_EN.md)
+[简体中文](README.md) | [English](README_EN.md) | [日本語](README_JA.md) | [한국어](README_KO.md)
 
 让 最终幻想14 识别并正常使用官方 Nintendo Switch Pro 手柄的 Dalamud 插件。
 
