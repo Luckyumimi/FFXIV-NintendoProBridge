@@ -14,11 +14,13 @@ internal sealed class ProControllerInput : IDisposable
     private static readonly long RumbleRefreshTicks = Stopwatch.Frequency * 50 / 1000;
 
     private readonly PluginSettings settings;
+    private readonly Action saveSettings;
     private readonly Hook<PadDevice.Delegates.Poll> pollHook;
     private readonly Hook<PadDevice.Delegates.SetVibration> vibrationHook;
     private readonly CancellationTokenSource cancellation = new();
     private readonly Task readerTask;
     private readonly object streamLock = new();
+    private readonly object calibrationLock = new();
     private readonly long[] nextRepeat = new long[16];
     private FileStream? currentStream;
     private ControllerSnapshot snapshot = ControllerSnapshot.Disconnected;
@@ -28,14 +30,44 @@ internal sealed class ProControllerInput : IDisposable
     private int desiredRightMotor;
     private long testRumbleUntil;
     private int packetNumber;
+    private CalibrationMode calibrationMode;
+    private CalibrationResult calibrationResult;
+    private long centerCalibrationEnd;
+    private long centerLeftX;
+    private long centerLeftY;
+    private long centerRightX;
+    private long centerRightY;
+    private int centerSamples;
+    private RawStickState rangeMinimum = RawStickState.Maximum;
+    private RawStickState rangeMaximum = RawStickState.Minimum;
     private bool disposed;
 
     public bool IsConnected => Volatile.Read(ref snapshot).Connected;
     public string? LastError => Volatile.Read(ref lastError);
+    public CalibrationMode CurrentCalibrationMode
+    {
+        get { lock (calibrationLock) return calibrationMode; }
+    }
+    public CalibrationResult LastCalibrationResult
+    {
+        get { lock (calibrationLock) return calibrationResult; }
+    }
+    public int RangeDirectionsCaptured
+    {
+        get
+        {
+            lock (calibrationLock)
+            {
+                if (calibrationMode != CalibrationMode.Range) return 0;
+                return CountCapturedDirections(rangeMinimum, rangeMaximum);
+            }
+        }
+    }
 
-    public unsafe ProControllerInput(IGameInteropProvider interop, PluginSettings settings)
+    public unsafe ProControllerInput(IGameInteropProvider interop, PluginSettings settings, Action saveSettings)
     {
         this.settings = settings;
+        this.saveSettings = saveSettings;
         pollHook = interop.HookFromAddress((nint)PadDevice.StaticVirtualTablePointer->Poll,
             (PadDevice.Delegates.Poll)PollDetour);
         vibrationHook = interop.HookFromAddress((nint)PadDevice.StaticVirtualTablePointer->SetVibration,
@@ -96,6 +128,74 @@ internal sealed class ProControllerInput : IDisposable
     {
         if (!settings.Enabled || !settings.EnableRumble || !IsConnected) return;
         Volatile.Write(ref testRumbleUntil, Stopwatch.GetTimestamp() + Stopwatch.Frequency / 2);
+    }
+
+    public void StartCenterCalibration()
+    {
+        if (!IsConnected) return;
+        lock (calibrationLock)
+        {
+            calibrationMode = CalibrationMode.Center;
+            calibrationResult = CalibrationResult.None;
+            centerCalibrationEnd = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
+            centerLeftX = centerLeftY = centerRightX = centerRightY = 0;
+            centerSamples = 0;
+        }
+    }
+
+    public void StartRangeCalibration()
+    {
+        if (!IsConnected) return;
+        lock (calibrationLock)
+        {
+            calibrationMode = CalibrationMode.Range;
+            calibrationResult = CalibrationResult.None;
+            rangeMinimum = RawStickState.Maximum;
+            rangeMaximum = RawStickState.Minimum;
+        }
+    }
+
+    public bool FinishRangeCalibration()
+    {
+        lock (calibrationLock)
+        {
+            if (calibrationMode != CalibrationMode.Range) return false;
+            if (CountCapturedDirections(rangeMinimum, rangeMaximum) < 8)
+            {
+                calibrationResult = CalibrationResult.RangeIncomplete;
+                return false;
+            }
+
+            settings.LeftStickCalibration.SetRange(rangeMinimum.LeftX, rangeMaximum.LeftX,
+                rangeMinimum.LeftY, rangeMaximum.LeftY);
+            settings.RightStickCalibration.SetRange(rangeMinimum.RightX, rangeMaximum.RightX,
+                rangeMinimum.RightY, rangeMaximum.RightY);
+            calibrationMode = CalibrationMode.None;
+            calibrationResult = CalibrationResult.RangeComplete;
+        }
+        saveSettings();
+        return true;
+    }
+
+    public void CancelCalibration()
+    {
+        lock (calibrationLock)
+        {
+            calibrationMode = CalibrationMode.None;
+            calibrationResult = CalibrationResult.None;
+        }
+    }
+
+    public void ResetCalibration()
+    {
+        lock (calibrationLock)
+        {
+            settings.LeftStickCalibration.Reset();
+            settings.RightStickCalibration.Reset();
+            calibrationMode = CalibrationMode.None;
+            calibrationResult = CalibrationResult.Reset;
+        }
+        saveSettings();
     }
 
     private void WriteGameState(ref GamepadInputData input, ControllerSnapshot state)
@@ -243,6 +343,14 @@ internal sealed class ProControllerInput : IDisposable
         previousButtons = 0;
         Array.Clear(nextRepeat);
         StopRumble();
+        lock (calibrationLock)
+        {
+            if (calibrationMode != CalibrationMode.None)
+            {
+                calibrationMode = CalibrationMode.None;
+                calibrationResult = CalibrationResult.Disconnected;
+            }
+        }
     }
 
     private void StopRumble()
@@ -264,11 +372,22 @@ internal sealed class ProControllerInput : IDisposable
             case 0x30 when report.Length >= 12:
             {
                 var right = report[3]; var shared = report[4]; var left = report[5];
+                var raw = new RawStickState(
+                    report[6] | ((report[7] & 0x0F) << 8),
+                    (report[7] >> 4) | (report[8] << 4),
+                    report[9] | ((report[10] & 0x0F) << 8),
+                    (report[10] >> 4) | (report[11] << 4));
+                UpdateCalibration(raw);
                 state = CreateState(
-                    Stick(report[6] | ((report[7] & 0x0F) << 8)),
-                    Stick((report[7] >> 4) | (report[8] << 4)),
-                    Stick(report[9] | ((report[10] & 0x0F) << 8)),
-                    Stick((report[10] >> 4) | (report[11] << 4)), right, shared, left);
+                    Stick(raw.LeftX, settings.LeftStickCalibration.CenterX,
+                        settings.LeftStickCalibration.MinimumX, settings.LeftStickCalibration.MaximumX),
+                    Stick(raw.LeftY, settings.LeftStickCalibration.CenterY,
+                        settings.LeftStickCalibration.MinimumY, settings.LeftStickCalibration.MaximumY),
+                    Stick(raw.RightX, settings.RightStickCalibration.CenterX,
+                        settings.RightStickCalibration.MinimumX, settings.RightStickCalibration.MaximumX),
+                    Stick(raw.RightY, settings.RightStickCalibration.CenterY,
+                        settings.RightStickCalibration.MinimumY, settings.RightStickCalibration.MaximumY),
+                    right, shared, left);
                 return true;
             }
             case 0x3F:
@@ -312,11 +431,59 @@ internal sealed class ProControllerInput : IDisposable
         if (pressed) buttons |= button;
     }
 
-    private static float Stick(int value)
+    private static float Stick(int value, int center, int minimum, int maximum)
     {
-        const float center = 2048f, minimum = 500f, maximum = 3500f;
-        return Math.Clamp(value >= center ? (value - center) / (maximum - center) :
-            (value - center) / (center - minimum), -1f, 1f);
+        var positiveRange = Math.Max(maximum - center, 1);
+        var negativeRange = Math.Max(center - minimum, 1);
+        return Math.Clamp(value >= center ? (value - center) / (float)positiveRange :
+            (value - center) / (float)negativeRange, -1f, 1f);
+    }
+
+    private void UpdateCalibration(RawStickState raw)
+    {
+        var save = false;
+        lock (calibrationLock)
+        {
+            if (calibrationMode == CalibrationMode.Center)
+            {
+                centerLeftX += raw.LeftX;
+                centerLeftY += raw.LeftY;
+                centerRightX += raw.RightX;
+                centerRightY += raw.RightY;
+                centerSamples++;
+                if (Stopwatch.GetTimestamp() >= centerCalibrationEnd && centerSamples > 0)
+                {
+                    settings.LeftStickCalibration.SetCenter(
+                        (int)(centerLeftX / centerSamples), (int)(centerLeftY / centerSamples));
+                    settings.RightStickCalibration.SetCenter(
+                        (int)(centerRightX / centerSamples), (int)(centerRightY / centerSamples));
+                    calibrationMode = CalibrationMode.None;
+                    calibrationResult = CalibrationResult.CenterComplete;
+                    save = true;
+                }
+            }
+            else if (calibrationMode == CalibrationMode.Range)
+            {
+                rangeMinimum = RawStickState.Min(rangeMinimum, raw);
+                rangeMaximum = RawStickState.Max(rangeMaximum, raw);
+            }
+        }
+        if (save) saveSettings();
+    }
+
+    private int CountCapturedDirections(RawStickState minimum, RawStickState maximum)
+    {
+        const int requiredTravel = 512;
+        var count = 0;
+        if (minimum.LeftX <= settings.LeftStickCalibration.CenterX - requiredTravel) count++;
+        if (maximum.LeftX >= settings.LeftStickCalibration.CenterX + requiredTravel) count++;
+        if (minimum.LeftY <= settings.LeftStickCalibration.CenterY - requiredTravel) count++;
+        if (maximum.LeftY >= settings.LeftStickCalibration.CenterY + requiredTravel) count++;
+        if (minimum.RightX <= settings.RightStickCalibration.CenterX - requiredTravel) count++;
+        if (maximum.RightX >= settings.RightStickCalibration.CenterX + requiredTravel) count++;
+        if (minimum.RightY <= settings.RightStickCalibration.CenterY - requiredTravel) count++;
+        if (maximum.RightY >= settings.RightStickCalibration.CenterY + requiredTravel) count++;
+        return count;
     }
 
     private static float ApplyDeadzone(float value, float deadzone)
@@ -456,4 +623,19 @@ internal sealed class ProControllerInput : IDisposable
     {
         public static readonly ControllerSnapshot Disconnected = new(false, 0, 0, 0, 0, GamepadButtonsFlags.None);
     }
+
+    private sealed record RawStickState(int LeftX, int LeftY, int RightX, int RightY)
+    {
+        public static readonly RawStickState Maximum = new(int.MaxValue, int.MaxValue, int.MaxValue, int.MaxValue);
+        public static readonly RawStickState Minimum = new(int.MinValue, int.MinValue, int.MinValue, int.MinValue);
+        public static RawStickState Min(RawStickState a, RawStickState b) => new(
+            Math.Min(a.LeftX, b.LeftX), Math.Min(a.LeftY, b.LeftY),
+            Math.Min(a.RightX, b.RightX), Math.Min(a.RightY, b.RightY));
+        public static RawStickState Max(RawStickState a, RawStickState b) => new(
+            Math.Max(a.LeftX, b.LeftX), Math.Max(a.LeftY, b.LeftY),
+            Math.Max(a.RightX, b.RightX), Math.Max(a.RightY, b.RightY));
+    }
 }
+
+internal enum CalibrationMode { None, Center, Range }
+internal enum CalibrationResult { None, CenterComplete, RangeComplete, RangeIncomplete, Reset, Disconnected }

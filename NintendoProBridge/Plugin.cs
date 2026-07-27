@@ -29,10 +29,15 @@ public sealed class Plugin : IDalamudPlugin
         var settingsPath = Path.Combine(configDirectory, "settings.json");
         var firstRun = !File.Exists(settingsPath);
         var settings = PluginSettings.Load(settingsPath);
+        var saveLock = new object();
+        Action saveSettings = () =>
+        {
+            lock (saveLock) Save(settingsPath, settings);
+        };
 
-        controllerInput = new ProControllerInput(interop, settings);
+        controllerInput = new ProControllerInput(interop, settings, saveSettings);
         settingsWindow = new SettingsWindow(settings, controllerInput,
-            () => Save(settingsPath, settings), () => pluginInterface.UiLanguage);
+            saveSettings, () => pluginInterface.UiLanguage);
         windowSystem.AddWindow(settingsWindow);
 
         pluginInterface.UiBuilder.Draw += Draw;
@@ -159,6 +164,52 @@ internal sealed class SettingsWindow : Window
         settings.RightDeadzone = rightDeadzone;
         if (changed) save();
 
+        ImGui.Separator();
+        ImGui.Text(T("stickCalibration"));
+        ImGui.TextWrapped(T("calibrationGuide"));
+        var calibrationMode = controller.CurrentCalibrationMode;
+        if (calibrationMode == CalibrationMode.None)
+        {
+            if (!controller.IsConnected) ImGui.BeginDisabled();
+            if (ImGui.Button(T("calibrateCenter"))) controller.StartCenterCalibration();
+            ImGui.SameLine();
+            if (ImGui.Button(T("calibrateRange"))) controller.StartRangeCalibration();
+            if (!controller.IsConnected) ImGui.EndDisabled();
+            ImGui.SameLine();
+            if (ImGui.Button(T("resetCalibration"))) controller.ResetCalibration();
+        }
+        else if (calibrationMode == CalibrationMode.Center)
+        {
+            ImGui.TextColored(new Vector4(1f, .75f, .2f, 1f), T("centerInProgress"));
+            if (ImGui.Button(T("cancelCalibration"))) controller.CancelCalibration();
+        }
+        else
+        {
+            ImGui.TextColored(new Vector4(1f, .75f, .2f, 1f),
+                string.Format(T("rangeInProgress"), controller.RangeDirectionsCaptured));
+            if (ImGui.Button(T("finishCalibration"))) controller.FinishRangeCalibration();
+            ImGui.SameLine();
+            if (ImGui.Button(T("cancelCalibration"))) controller.CancelCalibration();
+        }
+
+        var calibrationResult = controller.LastCalibrationResult;
+        if (calibrationResult != CalibrationResult.None)
+        {
+            var successful = calibrationResult != CalibrationResult.RangeIncomplete;
+            var resultKey = calibrationResult switch
+            {
+                CalibrationResult.CenterComplete => "centerComplete",
+                CalibrationResult.RangeComplete => "rangeComplete",
+                CalibrationResult.RangeIncomplete => "rangeIncomplete",
+                CalibrationResult.Reset => "calibrationReset",
+                CalibrationResult.Disconnected => "calibrationDisconnected",
+                _ => "calibrationReset",
+            };
+            ImGui.TextColored(successful
+                ? new Vector4(.3f, 1f, .45f, 1f)
+                : new Vector4(1f, .55f, .3f, 1f), T(resultKey));
+        }
+
         ImGui.Spacing();
         ImGui.TextDisabled(T("command"));
     }
@@ -190,6 +241,20 @@ internal static class LocalizedText
         ["swapXy"] = ["交换 X / Y", "Swap X / Y", "X / Y tauschen", "Inverser X / Y", "交換 X / Y", "X / Y 교체", "X / Y を入れ替える"],
         ["leftDeadzone"] = ["左摇杆死区", "Left stick deadzone", "Totzone linker Stick", "Zone morte du stick gauche", "左搖桿死區", "왼쪽 스틱 데드존", "左スティックのデッドゾーン"],
         ["rightDeadzone"] = ["右摇杆死区", "Right stick deadzone", "Totzone rechter Stick", "Zone morte du stick droit", "右搖桿死區", "오른쪽 스틱 데드존", "右スティックのデッドゾーン"],
+        ["stickCalibration"] = ["摇杆校准", "Stick calibration", "Stick-Kalibrierung", "Calibrage des sticks", "搖桿校準", "스틱 보정", "スティック調整"],
+        ["calibrationGuide"] = ["先让双摇杆回中进行回中校准，再开始满推校准并将两个摇杆沿外圈完整转动。", "Calibrate the centered sticks first. Then start full-range calibration and rotate both sticks around their full outer edge.", "Zuerst beide Sticks in Mittelstellung kalibrieren. Danach die Bereichskalibrierung starten und beide Sticks vollständig am Rand entlang drehen.", "Calibrez d’abord les sticks au repos, puis lancez le calibrage complet et faites tourner les deux sticks sur tout leur contour.", "先讓雙搖桿回中進行回中校準，再開始滿推校準並將兩個搖桿沿外圈完整轉動。", "먼저 두 스틱의 중앙을 보정한 뒤 전체 범위 보정을 시작하고 두 스틱을 바깥쪽 가장자리를 따라 완전히 돌리세요.", "まず両スティックを中央に戻して中央調整を行い、その後フルレンジ調整を開始して両方を外周いっぱいに回してください。"],
+        ["calibrateCenter"] = ["回中校准", "Calibrate center", "Mitte kalibrieren", "Calibrer le centre", "回中校準", "중앙 보정", "中央を調整"],
+        ["calibrateRange"] = ["满推校准", "Full-range calibration", "Bereich kalibrieren", "Calibrer la course", "滿推校準", "전체 범위 보정", "フルレンジ調整"],
+        ["resetCalibration"] = ["重置", "Reset", "Zurücksetzen", "Réinitialiser", "重設", "초기화", "リセット"],
+        ["centerInProgress"] = ["请松开双摇杆，正在采样（1 秒）…", "Release both sticks. Sampling for 1 second…", "Beide Sticks loslassen. Messung läuft 1 Sekunde…", "Relâchez les deux sticks. Mesure pendant 1 seconde…", "請鬆開雙搖桿，正在取樣（1 秒）…", "두 스틱에서 손을 떼세요. 1초 동안 측정합니다…", "両スティックから手を離してください。1秒間測定します…"],
+        ["rangeInProgress"] = ["沿外圈转动两个摇杆，已记录 {0}/8 个端点。", "Rotate both sticks around the outer edge. {0}/8 endpoints captured.", "Beide Sticks am Rand entlang drehen. {0}/8 Endpunkte erfasst.", "Faites tourner les deux sticks sur le contour. {0}/8 extrémités enregistrées.", "沿外圈轉動兩個搖桿，已記錄 {0}/8 個端點。", "두 스틱을 바깥쪽 가장자리를 따라 돌리세요. 끝점 {0}/8개 기록됨.", "両スティックを外周に沿って回してください。端点 {0}/8 を記録済み。"],
+        ["finishCalibration"] = ["完成", "Finish", "Abschließen", "Terminer", "完成", "완료", "完了"],
+        ["cancelCalibration"] = ["取消", "Cancel", "Abbrechen", "Annuler", "取消", "취소", "キャンセル"],
+        ["centerComplete"] = ["回中校准完成。", "Center calibration complete.", "Mittelstellung kalibriert.", "Calibrage du centre terminé.", "回中校準完成。", "중앙 보정이 완료되었습니다.", "中央調整が完了しました。"],
+        ["rangeComplete"] = ["满推校准完成。", "Full-range calibration complete.", "Bereichskalibrierung abgeschlossen.", "Calibrage de la course terminé.", "滿推校準完成。", "전체 범위 보정이 완료되었습니다.", "フルレンジ調整が完了しました。"],
+        ["rangeIncomplete"] = ["尚未记录全部 8 个端点，请继续转动两个摇杆。", "Not all 8 endpoints are captured. Keep rotating both sticks.", "Noch nicht alle 8 Endpunkte erfasst. Beide Sticks weiter drehen.", "Les 8 extrémités ne sont pas toutes enregistrées. Continuez à tourner les sticks.", "尚未記錄全部 8 個端點，請繼續轉動兩個搖桿。", "8개 끝점이 모두 기록되지 않았습니다. 두 스틱을 계속 돌리세요.", "8つの端点がまだ揃っていません。両スティックを回し続けてください。"],
+        ["calibrationReset"] = ["摇杆校准已重置。", "Stick calibration reset.", "Stick-Kalibrierung zurückgesetzt.", "Calibrage des sticks réinitialisé.", "搖桿校準已重設。", "스틱 보정이 초기화되었습니다.", "スティック調整をリセットしました。"],
+        ["calibrationDisconnected"] = ["手柄已断开，校准已取消。", "Controller disconnected; calibration cancelled.", "Controller getrennt; Kalibrierung abgebrochen.", "Manette déconnectée ; calibrage annulé.", "控制器已中斷連線，校準已取消。", "컨트롤러 연결이 끊겨 보정이 취소되었습니다.", "コントローラーが切断されたため、調整を中止しました。"],
         ["command"] = ["设置命令：/npro", "Settings command: /npro", "Einstellungsbefehl: /npro", "Commande des paramètres : /npro", "設定指令：/npro", "설정 명령어: /npro", "設定コマンド：/npro"],
     };
 
@@ -213,11 +278,64 @@ public sealed class PluginSettings
     public bool SwapXy { get; set; }
     public float LeftDeadzone { get; set; } = .35f;
     public float RightDeadzone { get; set; } = .35f;
+    public StickCalibration LeftStickCalibration { get; set; } = new();
+    public StickCalibration RightStickCalibration { get; set; } = new();
     public static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
     public static PluginSettings Load(string path)
     {
-        try { return JsonSerializer.Deserialize<PluginSettings>(File.ReadAllText(path), JsonOptions) ?? new(); }
+        try
+        {
+            var settings = JsonSerializer.Deserialize<PluginSettings>(File.ReadAllText(path), JsonOptions) ?? new();
+            settings.LeftStickCalibration ??= new();
+            settings.RightStickCalibration ??= new();
+            settings.LeftStickCalibration.Validate();
+            settings.RightStickCalibration.Validate();
+            return settings;
+        }
         catch (Exception ex) when (ex is IOException or JsonException) { return new(); }
+    }
+}
+
+public sealed class StickCalibration
+{
+    public int CenterX { get; set; } = 2048;
+    public int CenterY { get; set; } = 2048;
+    public int MinimumX { get; set; } = 500;
+    public int MaximumX { get; set; } = 3500;
+    public int MinimumY { get; set; } = 500;
+    public int MaximumY { get; set; } = 3500;
+
+    public void SetCenter(int x, int y)
+    {
+        CenterX = Math.Clamp(x, 1, 4094);
+        CenterY = Math.Clamp(y, 1, 4094);
+        Validate();
+    }
+
+    public void SetRange(int minimumX, int maximumX, int minimumY, int maximumY)
+    {
+        MinimumX = minimumX;
+        MaximumX = maximumX;
+        MinimumY = minimumY;
+        MaximumY = maximumY;
+        Validate();
+    }
+
+    public void Reset()
+    {
+        CenterX = CenterY = 2048;
+        MinimumX = MinimumY = 500;
+        MaximumX = MaximumY = 3500;
+    }
+
+    public void Validate()
+    {
+        CenterX = Math.Clamp(CenterX, 1, 4094);
+        CenterY = Math.Clamp(CenterY, 1, 4094);
+        MinimumX = Math.Clamp(MinimumX, 0, CenterX - 1);
+        MaximumX = Math.Clamp(MaximumX, CenterX + 1, 4095);
+        MinimumY = Math.Clamp(MinimumY, 0, CenterY - 1);
+        MaximumY = Math.Clamp(MaximumY, CenterY + 1, 4095);
     }
 }
