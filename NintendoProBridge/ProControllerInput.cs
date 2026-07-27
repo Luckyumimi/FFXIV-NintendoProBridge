@@ -38,8 +38,8 @@ internal sealed class ProControllerInput : IDisposable
     private long centerRightX;
     private long centerRightY;
     private int centerSamples;
-    private RawStickState rangeMinimum = RawStickState.Maximum;
-    private RawStickState rangeMaximum = RawStickState.Minimum;
+    private readonly int[] leftRangeRadii = new int[8];
+    private readonly int[] rightRangeRadii = new int[8];
     private bool disposed;
 
     public bool IsConnected => Volatile.Read(ref snapshot).Connected;
@@ -52,14 +52,25 @@ internal sealed class ProControllerInput : IDisposable
     {
         get { lock (calibrationLock) return calibrationResult; }
     }
-    public int RangeDirectionsCaptured
+    public int LeftRangeDirectionsCaptured
     {
         get
         {
             lock (calibrationLock)
             {
                 if (calibrationMode != CalibrationMode.Range) return 0;
-                return CountCapturedDirections(rangeMinimum, rangeMaximum);
+                return CountCapturedDirections(leftRangeRadii);
+            }
+        }
+    }
+    public int RightRangeDirectionsCaptured
+    {
+        get
+        {
+            lock (calibrationLock)
+            {
+                if (calibrationMode != CalibrationMode.Range) return 0;
+                return CountCapturedDirections(rightRangeRadii);
             }
         }
     }
@@ -150,8 +161,8 @@ internal sealed class ProControllerInput : IDisposable
         {
             calibrationMode = CalibrationMode.Range;
             calibrationResult = CalibrationResult.None;
-            rangeMinimum = RawStickState.Maximum;
-            rangeMaximum = RawStickState.Minimum;
+            Array.Clear(leftRangeRadii);
+            Array.Clear(rightRangeRadii);
         }
     }
 
@@ -160,16 +171,14 @@ internal sealed class ProControllerInput : IDisposable
         lock (calibrationLock)
         {
             if (calibrationMode != CalibrationMode.Range) return false;
-            if (CountCapturedDirections(rangeMinimum, rangeMaximum) < 8)
+            if (CountCapturedDirections(leftRangeRadii) < 8 || CountCapturedDirections(rightRangeRadii) < 8)
             {
                 calibrationResult = CalibrationResult.RangeIncomplete;
                 return false;
             }
 
-            settings.LeftStickCalibration.SetRange(rangeMinimum.LeftX, rangeMaximum.LeftX,
-                rangeMinimum.LeftY, rangeMaximum.LeftY);
-            settings.RightStickCalibration.SetRange(rangeMinimum.RightX, rangeMaximum.RightX,
-                rangeMinimum.RightY, rangeMaximum.RightY);
+            settings.LeftStickCalibration.SetDirectionalRanges(leftRangeRadii);
+            settings.RightStickCalibration.SetDirectionalRanges(rightRangeRadii);
             calibrationMode = CalibrationMode.None;
             calibrationResult = CalibrationResult.RangeComplete;
         }
@@ -378,15 +387,9 @@ internal sealed class ProControllerInput : IDisposable
                     report[9] | ((report[10] & 0x0F) << 8),
                     (report[10] >> 4) | (report[11] << 4));
                 UpdateCalibration(raw);
-                state = CreateState(
-                    Stick(raw.LeftX, settings.LeftStickCalibration.CenterX,
-                        settings.LeftStickCalibration.MinimumX, settings.LeftStickCalibration.MaximumX),
-                    Stick(raw.LeftY, settings.LeftStickCalibration.CenterY,
-                        settings.LeftStickCalibration.MinimumY, settings.LeftStickCalibration.MaximumY),
-                    Stick(raw.RightX, settings.RightStickCalibration.CenterX,
-                        settings.RightStickCalibration.MinimumX, settings.RightStickCalibration.MaximumX),
-                    Stick(raw.RightY, settings.RightStickCalibration.CenterY,
-                        settings.RightStickCalibration.MinimumY, settings.RightStickCalibration.MaximumY),
+                var leftStick = NormalizeStick(raw.LeftX, raw.LeftY, settings.LeftStickCalibration);
+                var rightStick = NormalizeStick(raw.RightX, raw.RightY, settings.RightStickCalibration);
+                state = CreateState(leftStick.X, leftStick.Y, rightStick.X, rightStick.Y,
                     right, shared, left);
                 return true;
             }
@@ -421,9 +424,9 @@ internal sealed class ProControllerInput : IDisposable
         Add(ref buttons, (left & 0x01) != 0, GamepadButtonsFlags.DPadDown);
         Add(ref buttons, (left & 0x08) != 0, GamepadButtonsFlags.DPadLeft);
         Add(ref buttons, (left & 0x04) != 0, GamepadButtonsFlags.DPadRight);
-        return new ControllerSnapshot(true,
-            ApplyDeadzone(lx, settings.LeftDeadzone), ApplyDeadzone(ly, settings.LeftDeadzone),
-            ApplyDeadzone(rx, settings.RightDeadzone), ApplyDeadzone(ry, settings.RightDeadzone), buttons);
+        var leftStick = ApplyDeadzone(lx, ly, settings.LeftDeadzone);
+        var rightStick = ApplyDeadzone(rx, ry, settings.RightDeadzone);
+        return new ControllerSnapshot(true, leftStick.X, leftStick.Y, rightStick.X, rightStick.Y, buttons);
     }
 
     private static void Add(ref GamepadButtonsFlags buttons, bool pressed, GamepadButtonsFlags button)
@@ -431,12 +434,30 @@ internal sealed class ProControllerInput : IDisposable
         if (pressed) buttons |= button;
     }
 
-    private static float Stick(int value, int center, int minimum, int maximum)
+    private static (float X, float Y) NormalizeStick(int x, int y, StickCalibration calibration)
     {
-        var positiveRange = Math.Max(maximum - center, 1);
-        var negativeRange = Math.Max(center - minimum, 1);
-        return Math.Clamp(value >= center ? (value - center) / (float)positiveRange :
-            (value - center) / (float)negativeRange, -1f, 1f);
+        var dx = x - calibration.CenterX;
+        var dy = y - calibration.CenterY;
+        if (dx == 0 && dy == 0) return (0, 0);
+
+        var angle = MathF.Atan2(dy, dx);
+        if (angle < 0) angle += MathF.Tau;
+        var sector = angle / (MathF.PI / 4f);
+        var lower = (int)MathF.Floor(sector) & 7;
+        var upper = (lower + 1) & 7;
+        var fraction = sector - MathF.Floor(sector);
+        var boundary = calibration.DirectionalRanges[lower] +
+            (calibration.DirectionalRanges[upper] - calibration.DirectionalRanges[lower]) * fraction;
+        var scale = 1f / Math.Max(boundary, 1f);
+        var normalizedX = dx * scale;
+        var normalizedY = dy * scale;
+        var magnitude = MathF.Sqrt(normalizedX * normalizedX + normalizedY * normalizedY);
+        if (magnitude > 1f)
+        {
+            normalizedX /= magnitude;
+            normalizedY /= magnitude;
+        }
+        return (normalizedX, normalizedY);
     }
 
     private void UpdateCalibration(RawStickState raw)
@@ -464,33 +485,35 @@ internal sealed class ProControllerInput : IDisposable
             }
             else if (calibrationMode == CalibrationMode.Range)
             {
-                rangeMinimum = RawStickState.Min(rangeMinimum, raw);
-                rangeMaximum = RawStickState.Max(rangeMaximum, raw);
+                CaptureDirection(raw.LeftX - settings.LeftStickCalibration.CenterX,
+                    raw.LeftY - settings.LeftStickCalibration.CenterY, leftRangeRadii);
+                CaptureDirection(raw.RightX - settings.RightStickCalibration.CenterX,
+                    raw.RightY - settings.RightStickCalibration.CenterY, rightRangeRadii);
             }
         }
         if (save) saveSettings();
     }
 
-    private int CountCapturedDirections(RawStickState minimum, RawStickState maximum)
+    private static void CaptureDirection(int x, int y, int[] radii)
     {
         const int requiredTravel = 512;
-        var count = 0;
-        if (minimum.LeftX <= settings.LeftStickCalibration.CenterX - requiredTravel) count++;
-        if (maximum.LeftX >= settings.LeftStickCalibration.CenterX + requiredTravel) count++;
-        if (minimum.LeftY <= settings.LeftStickCalibration.CenterY - requiredTravel) count++;
-        if (maximum.LeftY >= settings.LeftStickCalibration.CenterY + requiredTravel) count++;
-        if (minimum.RightX <= settings.RightStickCalibration.CenterX - requiredTravel) count++;
-        if (maximum.RightX >= settings.RightStickCalibration.CenterX + requiredTravel) count++;
-        if (minimum.RightY <= settings.RightStickCalibration.CenterY - requiredTravel) count++;
-        if (maximum.RightY >= settings.RightStickCalibration.CenterY + requiredTravel) count++;
-        return count;
+        var radius = (int)MathF.Round(MathF.Sqrt(x * x + y * y));
+        if (radius < requiredTravel) return;
+        var angle = MathF.Atan2(y, x);
+        if (angle < 0) angle += MathF.Tau;
+        var direction = ((int)MathF.Round(angle / (MathF.PI / 4f))) & 7;
+        radii[direction] = Math.Max(radii[direction], radius);
     }
 
-    private static float ApplyDeadzone(float value, float deadzone)
+    private static int CountCapturedDirections(int[] radii) => radii.Count(radius => radius > 0);
+
+    private static (float X, float Y) ApplyDeadzone(float x, float y, float deadzone)
     {
-        var magnitude = Math.Abs(value);
-        if (magnitude <= deadzone) return 0;
-        return Math.Clamp(MathF.Sign(value) * (magnitude - deadzone) / (1 - deadzone), -1f, 1f);
+        var magnitude = MathF.Sqrt(x * x + y * y);
+        if (magnitude <= deadzone || magnitude == 0) return (0, 0);
+        var outputMagnitude = Math.Clamp((magnitude - deadzone) / (1 - deadzone), 0f, 1f);
+        var scale = outputMagnitude / magnitude;
+        return (x * scale, y * scale);
     }
 
     private static async Task TryInitializeUsbAsync(FileStream stream, int inputReportLength,
@@ -624,17 +647,7 @@ internal sealed class ProControllerInput : IDisposable
         public static readonly ControllerSnapshot Disconnected = new(false, 0, 0, 0, 0, GamepadButtonsFlags.None);
     }
 
-    private sealed record RawStickState(int LeftX, int LeftY, int RightX, int RightY)
-    {
-        public static readonly RawStickState Maximum = new(int.MaxValue, int.MaxValue, int.MaxValue, int.MaxValue);
-        public static readonly RawStickState Minimum = new(int.MinValue, int.MinValue, int.MinValue, int.MinValue);
-        public static RawStickState Min(RawStickState a, RawStickState b) => new(
-            Math.Min(a.LeftX, b.LeftX), Math.Min(a.LeftY, b.LeftY),
-            Math.Min(a.RightX, b.RightX), Math.Min(a.RightY, b.RightY));
-        public static RawStickState Max(RawStickState a, RawStickState b) => new(
-            Math.Max(a.LeftX, b.LeftX), Math.Max(a.LeftY, b.LeftY),
-            Math.Max(a.RightX, b.RightX), Math.Max(a.RightY, b.RightY));
-    }
+    private sealed record RawStickState(int LeftX, int LeftY, int RightX, int RightY);
 }
 
 internal enum CalibrationMode { None, Center, Range }

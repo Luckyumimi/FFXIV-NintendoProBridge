@@ -12,7 +12,7 @@ The plugin reads the controller directly and operates only inside the FFXIV proc
 - Sticks, D-pad, face buttons, shoulder buttons, triggers, Plus/Minus, and stick clicks.
 - Optional A/B and X/Y swaps.
 - Independent deadzone settings for both sticks.
-- Center and full-range calibration with 8 independently recorded stick endpoints.
+- Center and full-range calibration with 8 independently recorded endpoints for each stick.
 - Game rumble support with a test button in the settings window.
 - Simplified Chinese, Traditional Chinese, Japanese, English, German, French, and Korean interfaces.
 

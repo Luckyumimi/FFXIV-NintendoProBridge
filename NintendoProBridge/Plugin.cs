@@ -186,7 +186,8 @@ internal sealed class SettingsWindow : Window
         else
         {
             ImGui.TextColored(new Vector4(1f, .75f, .2f, 1f),
-                string.Format(T("rangeInProgress"), controller.RangeDirectionsCaptured));
+                string.Format(T("rangeInProgress"), controller.LeftRangeDirectionsCaptured,
+                    controller.RightRangeDirectionsCaptured));
             if (ImGui.Button(T("finishCalibration"))) controller.FinishRangeCalibration();
             ImGui.SameLine();
             if (ImGui.Button(T("cancelCalibration"))) controller.CancelCalibration();
@@ -247,12 +248,12 @@ internal static class LocalizedText
         ["calibrateRange"] = ["满推校准", "Full-range calibration", "Bereich kalibrieren", "Calibrer la course", "滿推校準", "전체 범위 보정", "フルレンジ調整"],
         ["resetCalibration"] = ["重置", "Reset", "Zurücksetzen", "Réinitialiser", "重設", "초기화", "リセット"],
         ["centerInProgress"] = ["请松开双摇杆，正在采样（1 秒）…", "Release both sticks. Sampling for 1 second…", "Beide Sticks loslassen. Messung läuft 1 Sekunde…", "Relâchez les deux sticks. Mesure pendant 1 seconde…", "請鬆開雙搖桿，正在取樣（1 秒）…", "두 스틱에서 손을 떼세요. 1초 동안 측정합니다…", "両スティックから手を離してください。1秒間測定します…"],
-        ["rangeInProgress"] = ["沿外圈转动两个摇杆，已记录 {0}/8 个端点。", "Rotate both sticks around the outer edge. {0}/8 endpoints captured.", "Beide Sticks am Rand entlang drehen. {0}/8 Endpunkte erfasst.", "Faites tourner les deux sticks sur le contour. {0}/8 extrémités enregistrées.", "沿外圈轉動兩個搖桿，已記錄 {0}/8 個端點。", "두 스틱을 바깥쪽 가장자리를 따라 돌리세요. 끝점 {0}/8개 기록됨.", "両スティックを外周に沿って回してください。端点 {0}/8 を記録済み。"],
+        ["rangeInProgress"] = ["沿外圈转动摇杆：左 {0}/8，右 {1}/8。", "Rotate the sticks around the outer edge: left {0}/8, right {1}/8.", "Sticks am Rand entlang drehen: links {0}/8, rechts {1}/8.", "Faites tourner les sticks sur le contour : gauche {0}/8, droite {1}/8.", "沿外圈轉動搖桿：左 {0}/8，右 {1}/8。", "스틱을 바깥쪽 가장자리를 따라 돌리세요: 왼쪽 {0}/8, 오른쪽 {1}/8.", "スティックを外周に沿って回してください：左 {0}/8、右 {1}/8。"],
         ["finishCalibration"] = ["完成", "Finish", "Abschließen", "Terminer", "完成", "완료", "完了"],
         ["cancelCalibration"] = ["取消", "Cancel", "Abbrechen", "Annuler", "取消", "취소", "キャンセル"],
         ["centerComplete"] = ["回中校准完成。", "Center calibration complete.", "Mittelstellung kalibriert.", "Calibrage du centre terminé.", "回中校準完成。", "중앙 보정이 완료되었습니다.", "中央調整が完了しました。"],
         ["rangeComplete"] = ["满推校准完成。", "Full-range calibration complete.", "Bereichskalibrierung abgeschlossen.", "Calibrage de la course terminé.", "滿推校準完成。", "전체 범위 보정이 완료되었습니다.", "フルレンジ調整が完了しました。"],
-        ["rangeIncomplete"] = ["尚未记录全部 8 个端点，请继续转动两个摇杆。", "Not all 8 endpoints are captured. Keep rotating both sticks.", "Noch nicht alle 8 Endpunkte erfasst. Beide Sticks weiter drehen.", "Les 8 extrémités ne sont pas toutes enregistrées. Continuez à tourner les sticks.", "尚未記錄全部 8 個端點，請繼續轉動兩個搖桿。", "8개 끝점이 모두 기록되지 않았습니다. 두 스틱을 계속 돌리세요.", "8つの端点がまだ揃っていません。両スティックを回し続けてください。"],
+        ["rangeIncomplete"] = ["每根摇杆都需要记录 8 个端点，请继续沿外圈转动。", "Each stick needs all 8 endpoints. Keep rotating them around the outer edge.", "Für jeden Stick werden alle 8 Endpunkte benötigt. Weiter am Rand entlang drehen.", "Chaque stick doit enregistrer ses 8 extrémités. Continuez à les faire tourner sur le contour.", "每根搖桿都需要記錄 8 個端點，請繼續沿外圈轉動。", "각 스틱마다 8개 끝점이 모두 필요합니다. 바깥쪽 가장자리를 따라 계속 돌리세요.", "各スティックで8つすべての端点が必要です。外周に沿って回し続けてください。"],
         ["calibrationReset"] = ["摇杆校准已重置。", "Stick calibration reset.", "Stick-Kalibrierung zurückgesetzt.", "Calibrage des sticks réinitialisé.", "搖桿校準已重設。", "스틱 보정이 초기화되었습니다.", "スティック調整をリセットしました。"],
         ["calibrationDisconnected"] = ["手柄已断开，校准已取消。", "Controller disconnected; calibration cancelled.", "Controller getrennt; Kalibrierung abgebrochen.", "Manette déconnectée ; calibrage annulé.", "控制器已中斷連線，校準已取消。", "컨트롤러 연결이 끊겨 보정이 취소되었습니다.", "コントローラーが切断されたため、調整を中止しました。"],
         ["command"] = ["设置命令：/npro", "Settings command: /npro", "Einstellungsbefehl: /npro", "Commande des paramètres : /npro", "設定指令：/npro", "설정 명령어: /npro", "設定コマンド：/npro"],
@@ -299,12 +300,14 @@ public sealed class PluginSettings
 
 public sealed class StickCalibration
 {
+    private const int MaximumRadius = 5792;
     public int CenterX { get; set; } = 2048;
     public int CenterY { get; set; } = 2048;
     public int MinimumX { get; set; } = 500;
     public int MaximumX { get; set; } = 3500;
     public int MinimumY { get; set; } = 500;
     public int MaximumY { get; set; } = 3500;
+    public int[] DirectionalRanges { get; set; } = CreateDefaultDirectionalRanges();
 
     public void SetCenter(int x, int y)
     {
@@ -313,12 +316,14 @@ public sealed class StickCalibration
         Validate();
     }
 
-    public void SetRange(int minimumX, int maximumX, int minimumY, int maximumY)
+    public void SetDirectionalRanges(IReadOnlyList<int> ranges)
     {
-        MinimumX = minimumX;
-        MaximumX = maximumX;
-        MinimumY = minimumY;
-        MaximumY = maximumY;
+        if (ranges.Count != 8) throw new ArgumentException("Eight directional ranges are required.", nameof(ranges));
+        DirectionalRanges = ranges.Select(radius => Math.Clamp(radius, 256, MaximumRadius)).ToArray();
+        MaximumX = Math.Clamp(CenterX + DirectionalRanges[0], CenterX + 1, 4095);
+        MaximumY = Math.Clamp(CenterY + DirectionalRanges[2], CenterY + 1, 4095);
+        MinimumX = Math.Clamp(CenterX - DirectionalRanges[4], 0, CenterX - 1);
+        MinimumY = Math.Clamp(CenterY - DirectionalRanges[6], 0, CenterY - 1);
         Validate();
     }
 
@@ -327,6 +332,7 @@ public sealed class StickCalibration
         CenterX = CenterY = 2048;
         MinimumX = MinimumY = 500;
         MaximumX = MaximumY = 3500;
+        DirectionalRanges = CreateDefaultDirectionalRanges();
     }
 
     public void Validate()
@@ -337,5 +343,29 @@ public sealed class StickCalibration
         MaximumX = Math.Clamp(MaximumX, CenterX + 1, 4095);
         MinimumY = Math.Clamp(MinimumY, 0, CenterY - 1);
         MaximumY = Math.Clamp(MaximumY, CenterY + 1, 4095);
+        if (DirectionalRanges is null || DirectionalRanges.Length != 8)
+            DirectionalRanges = CreateDirectionalRangesFromAxes();
+        else
+            DirectionalRanges = DirectionalRanges.Select(radius =>
+                Math.Clamp(radius, 256, MaximumRadius)).ToArray();
+    }
+
+    private static int[] CreateDefaultDirectionalRanges() =>
+        Enumerable.Repeat(1500, 8).ToArray();
+
+    private int[] CreateDirectionalRangesFromAxes()
+    {
+        var ranges = new int[8];
+        for (var index = 0; index < ranges.Length; index++)
+        {
+            var angle = index * Math.PI / 4;
+            var cos = Math.Cos(angle);
+            var sin = Math.Sin(angle);
+            var xRadius = cos >= 0 ? MaximumX - CenterX : CenterX - MinimumX;
+            var yRadius = sin >= 0 ? MaximumY - CenterY : CenterY - MinimumY;
+            var inverseSquared = cos * cos / (xRadius * xRadius) + sin * sin / (yRadius * yRadius);
+            ranges[index] = Math.Clamp((int)Math.Round(1 / Math.Sqrt(inverseSquared)), 256, MaximumRadius);
+        }
+        return ranges;
     }
 }
