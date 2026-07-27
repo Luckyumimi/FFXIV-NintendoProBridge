@@ -7,20 +7,23 @@ namespace NintendoProBridge;
 
 internal sealed class ProControllerInput : IDisposable
 {
-    private const int StickRange = 1000;
+    private const int StickRange = 99;
     private static readonly long InitialRepeatTicks = Stopwatch.Frequency / 2;
     private static readonly long RepeatTicks = Stopwatch.Frequency / 15;
     private static readonly long RumbleMinimumWriteTicks = Stopwatch.Frequency * 30 / 1000;
     private static readonly long RumbleRefreshTicks = Stopwatch.Frequency * 50 / 1000;
 
     private readonly PluginSettings settings;
+    private readonly Action saveSettings;
     private readonly Hook<PadDevice.Delegates.Poll> pollHook;
     private readonly Hook<PadDevice.Delegates.SetVibration> vibrationHook;
     private readonly CancellationTokenSource cancellation = new();
     private readonly Task readerTask;
     private readonly object streamLock = new();
+    private readonly object calibrationLock = new();
     private readonly long[] nextRepeat = new long[16];
     private FileStream? currentStream;
+    private NativeHidDeviceInfo[] availableDevices = [];
     private ControllerSnapshot snapshot = ControllerSnapshot.Disconnected;
     private string? lastError;
     private GamepadButtonsFlags previousButtons;
@@ -28,14 +31,56 @@ internal sealed class ProControllerInput : IDisposable
     private int desiredRightMotor;
     private long testRumbleUntil;
     private int packetNumber;
+    private CalibrationMode calibrationMode;
+    private CalibrationResult calibrationResult;
+    private long centerCalibrationEnd;
+    private long centerLeftX;
+    private long centerLeftY;
+    private long centerRightX;
+    private long centerRightY;
+    private int centerSamples;
+    private readonly int[] leftRangeRadii = new int[8];
+    private readonly int[] rightRangeRadii = new int[8];
     private bool disposed;
 
     public bool IsConnected => Volatile.Read(ref snapshot).Connected;
     public string? LastError => Volatile.Read(ref lastError);
+    public IReadOnlyList<NativeHidDeviceInfo> AvailableDevices => Volatile.Read(ref availableDevices);
+    public CalibrationMode CurrentCalibrationMode
+    {
+        get { lock (calibrationLock) return calibrationMode; }
+    }
+    public CalibrationResult LastCalibrationResult
+    {
+        get { lock (calibrationLock) return calibrationResult; }
+    }
+    public int LeftRangeDirectionsCaptured
+    {
+        get
+        {
+            lock (calibrationLock)
+            {
+                if (calibrationMode != CalibrationMode.Range) return 0;
+                return CountCapturedDirections(leftRangeRadii);
+            }
+        }
+    }
+    public int RightRangeDirectionsCaptured
+    {
+        get
+        {
+            lock (calibrationLock)
+            {
+                if (calibrationMode != CalibrationMode.Range) return 0;
+                return CountCapturedDirections(rightRangeRadii);
+            }
+        }
+    }
 
-    public unsafe ProControllerInput(IGameInteropProvider interop, PluginSettings settings)
+    public unsafe ProControllerInput(IGameInteropProvider interop, PluginSettings settings, Action saveSettings)
     {
         this.settings = settings;
+        this.saveSettings = saveSettings;
         pollHook = interop.HookFromAddress((nint)PadDevice.StaticVirtualTablePointer->Poll,
             (PadDevice.Delegates.Poll)PollDetour);
         vibrationHook = interop.HookFromAddress((nint)PadDevice.StaticVirtualTablePointer->SetVibration,
@@ -96,6 +141,85 @@ internal sealed class ProControllerInput : IDisposable
     {
         if (!settings.Enabled || !settings.EnableRumble || !IsConnected) return;
         Volatile.Write(ref testRumbleUntil, Stopwatch.GetTimestamp() + Stopwatch.Frequency / 2);
+    }
+
+    public void RefreshDevices()
+    {
+        Volatile.Write(ref availableDevices, NativeHid.ListNintendoProDevices());
+    }
+
+    public void SelectDevice(string? path)
+    {
+        if (string.Equals(settings.SelectedDevicePath, path, StringComparison.OrdinalIgnoreCase)) return;
+        settings.SelectedDevicePath = string.IsNullOrWhiteSpace(path) ? null : path;
+        saveSettings();
+        lock (streamLock) currentStream?.Close();
+    }
+
+    public void StartCenterCalibration()
+    {
+        if (!IsConnected) return;
+        lock (calibrationLock)
+        {
+            calibrationMode = CalibrationMode.Center;
+            calibrationResult = CalibrationResult.None;
+            centerCalibrationEnd = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
+            centerLeftX = centerLeftY = centerRightX = centerRightY = 0;
+            centerSamples = 0;
+        }
+    }
+
+    public void StartRangeCalibration()
+    {
+        if (!IsConnected) return;
+        lock (calibrationLock)
+        {
+            calibrationMode = CalibrationMode.Range;
+            calibrationResult = CalibrationResult.None;
+            Array.Clear(leftRangeRadii);
+            Array.Clear(rightRangeRadii);
+        }
+    }
+
+    public bool FinishRangeCalibration()
+    {
+        lock (calibrationLock)
+        {
+            if (calibrationMode != CalibrationMode.Range) return false;
+            if (CountCapturedDirections(leftRangeRadii) < 8 || CountCapturedDirections(rightRangeRadii) < 8)
+            {
+                calibrationResult = CalibrationResult.RangeIncomplete;
+                return false;
+            }
+
+            settings.LeftStickCalibration.SetDirectionalRanges(leftRangeRadii);
+            settings.RightStickCalibration.SetDirectionalRanges(rightRangeRadii);
+            calibrationMode = CalibrationMode.None;
+            calibrationResult = CalibrationResult.RangeComplete;
+        }
+        saveSettings();
+        return true;
+    }
+
+    public void CancelCalibration()
+    {
+        lock (calibrationLock)
+        {
+            calibrationMode = CalibrationMode.None;
+            calibrationResult = CalibrationResult.None;
+        }
+    }
+
+    public void ResetCalibration()
+    {
+        lock (calibrationLock)
+        {
+            settings.LeftStickCalibration.Reset();
+            settings.RightStickCalibration.Reset();
+            calibrationMode = CalibrationMode.None;
+            calibrationResult = CalibrationResult.Reset;
+        }
+        saveSettings();
     }
 
     private void WriteGameState(ref GamepadInputData input, ControllerSnapshot state)
@@ -168,7 +292,8 @@ internal sealed class ProControllerInput : IDisposable
         {
             try
             {
-                var device = NativeHid.TryOpenNintendoPro();
+                var device = NativeHid.TryOpenNintendoPro(settings.SelectedDevicePath, out var discoveredDevices);
+                Volatile.Write(ref availableDevices, discoveredDevices);
                 if (device is null)
                 {
                     SetDisconnected(null);
@@ -182,13 +307,16 @@ internal sealed class ProControllerInput : IDisposable
                     Volatile.Write(ref lastError, null);
                     Interlocked.Exchange(ref packetNumber, 0);
                     StopRumble();
-                    if (device.IsUsb) await TryInitializeUsbAsync(device.Stream, token);
-                    await TryEnableVibrationAsync(device.Stream, token);
+                    if (device.IsUsb)
+                        await TryInitializeUsbAsync(device.Stream, device.InputReportLength,
+                            device.OutputReportLength, token);
+                    await TryEnableVibrationAsync(device.Stream, device.OutputReportLength, token);
                     await Task.Delay(10, token);
-                    await TryEnableFullInputReportsAsync(device.Stream, token);
+                    await TryEnableFullInputReportsAsync(device.Stream, device.OutputReportLength, token);
                     using var connectionCancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
-                    var rumbleTask = RunRumbleLoopAsync(device.Stream, connectionCancellation.Token);
-                    var report = new byte[64];
+                    var rumbleTask = RunRumbleLoopAsync(device.Stream, device.OutputReportLength,
+                        connectionCancellation.Token);
+                    var report = new byte[device.InputReportLength];
                     try
                     {
                         while (!token.IsCancellationRequested)
@@ -200,7 +328,7 @@ internal sealed class ProControllerInput : IDisposable
                                 if (count > 0 && TryDecode(report.AsSpan(0, count), out var decoded))
                                     Volatile.Write(ref snapshot, decoded);
                             }
-                            catch (IOException) { break; }
+                            catch (Exception ex) when (ex is IOException or ObjectDisposedException) { break; }
                         }
                     }
                     finally
@@ -212,7 +340,7 @@ internal sealed class ProControllerInput : IDisposable
                 }
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { break; }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ObjectDisposedException)
             {
                 SetDisconnected(ex.GetType().Name);
             }
@@ -240,6 +368,14 @@ internal sealed class ProControllerInput : IDisposable
         previousButtons = 0;
         Array.Clear(nextRepeat);
         StopRumble();
+        lock (calibrationLock)
+        {
+            if (calibrationMode != CalibrationMode.None)
+            {
+                calibrationMode = CalibrationMode.None;
+                calibrationResult = CalibrationResult.Disconnected;
+            }
+        }
     }
 
     private void StopRumble()
@@ -261,11 +397,16 @@ internal sealed class ProControllerInput : IDisposable
             case 0x30 when report.Length >= 12:
             {
                 var right = report[3]; var shared = report[4]; var left = report[5];
-                state = CreateState(
-                    Stick(report[6] | ((report[7] & 0x0F) << 8)),
-                    Stick((report[7] >> 4) | (report[8] << 4)),
-                    Stick(report[9] | ((report[10] & 0x0F) << 8)),
-                    Stick((report[10] >> 4) | (report[11] << 4)), right, shared, left);
+                var raw = new RawStickState(
+                    report[6] | ((report[7] & 0x0F) << 8),
+                    (report[7] >> 4) | (report[8] << 4),
+                    report[9] | ((report[10] & 0x0F) << 8),
+                    (report[10] >> 4) | (report[11] << 4));
+                UpdateCalibration(raw);
+                var leftStick = NormalizeStick(raw.LeftX, raw.LeftY, settings.LeftStickCalibration);
+                var rightStick = NormalizeStick(raw.RightX, raw.RightY, settings.RightStickCalibration);
+                state = CreateState(leftStick.X, leftStick.Y, rightStick.X, rightStick.Y,
+                    right, shared, left);
                 return true;
             }
             case 0x3F:
@@ -299,9 +440,9 @@ internal sealed class ProControllerInput : IDisposable
         Add(ref buttons, (left & 0x01) != 0, GamepadButtonsFlags.DPadDown);
         Add(ref buttons, (left & 0x08) != 0, GamepadButtonsFlags.DPadLeft);
         Add(ref buttons, (left & 0x04) != 0, GamepadButtonsFlags.DPadRight);
-        return new ControllerSnapshot(true,
-            ApplyDeadzone(lx, settings.LeftDeadzone), ApplyDeadzone(ly, settings.LeftDeadzone),
-            ApplyDeadzone(rx, settings.RightDeadzone), ApplyDeadzone(ry, settings.RightDeadzone), buttons);
+        var leftStick = ApplyDeadzone(lx, ly, settings.LeftDeadzone);
+        var rightStick = ApplyDeadzone(rx, ry, settings.RightDeadzone);
+        return new ControllerSnapshot(true, leftStick.X, leftStick.Y, rightStick.X, rightStick.Y, buttons);
     }
 
     private static void Add(ref GamepadButtonsFlags buttons, bool pressed, GamepadButtonsFlags button)
@@ -309,54 +450,126 @@ internal sealed class ProControllerInput : IDisposable
         if (pressed) buttons |= button;
     }
 
-    private static float Stick(int value)
+    private static (float X, float Y) NormalizeStick(int x, int y, StickCalibration calibration)
     {
-        const float center = 2048f, minimum = 500f, maximum = 3500f;
-        return Math.Clamp(value >= center ? (value - center) / (maximum - center) :
-            (value - center) / (center - minimum), -1f, 1f);
+        var dx = x - calibration.CenterX;
+        var dy = y - calibration.CenterY;
+        if (dx == 0 && dy == 0) return (0, 0);
+
+        var angle = MathF.Atan2(dy, dx);
+        if (angle < 0) angle += MathF.Tau;
+        var sector = angle / (MathF.PI / 4f);
+        var lower = (int)MathF.Floor(sector) & 7;
+        var upper = (lower + 1) & 7;
+        var fraction = sector - MathF.Floor(sector);
+        var boundary = calibration.DirectionalRanges[lower] +
+            (calibration.DirectionalRanges[upper] - calibration.DirectionalRanges[lower]) * fraction;
+        var scale = 1f / Math.Max(boundary, 1f);
+        var normalizedX = dx * scale;
+        var normalizedY = dy * scale;
+        var magnitude = MathF.Sqrt(normalizedX * normalizedX + normalizedY * normalizedY);
+        if (magnitude > 1f)
+        {
+            normalizedX /= magnitude;
+            normalizedY /= magnitude;
+        }
+        return (normalizedX, normalizedY);
     }
 
-    private static float ApplyDeadzone(float value, float deadzone)
+    private void UpdateCalibration(RawStickState raw)
     {
-        var magnitude = Math.Abs(value);
-        if (magnitude <= deadzone) return 0;
-        return Math.Clamp(MathF.Sign(value) * (magnitude - deadzone) / (1 - deadzone), -1f, 1f);
+        var save = false;
+        lock (calibrationLock)
+        {
+            if (calibrationMode == CalibrationMode.Center)
+            {
+                centerLeftX += raw.LeftX;
+                centerLeftY += raw.LeftY;
+                centerRightX += raw.RightX;
+                centerRightY += raw.RightY;
+                centerSamples++;
+                if (Stopwatch.GetTimestamp() >= centerCalibrationEnd && centerSamples > 0)
+                {
+                    settings.LeftStickCalibration.SetCenter(
+                        (int)(centerLeftX / centerSamples), (int)(centerLeftY / centerSamples));
+                    settings.RightStickCalibration.SetCenter(
+                        (int)(centerRightX / centerSamples), (int)(centerRightY / centerSamples));
+                    calibrationMode = CalibrationMode.None;
+                    calibrationResult = CalibrationResult.CenterComplete;
+                    save = true;
+                }
+            }
+            else if (calibrationMode == CalibrationMode.Range)
+            {
+                CaptureDirection(raw.LeftX - settings.LeftStickCalibration.CenterX,
+                    raw.LeftY - settings.LeftStickCalibration.CenterY, leftRangeRadii);
+                CaptureDirection(raw.RightX - settings.RightStickCalibration.CenterX,
+                    raw.RightY - settings.RightStickCalibration.CenterY, rightRangeRadii);
+            }
+        }
+        if (save) saveSettings();
     }
 
-    private static async Task TryInitializeUsbAsync(FileStream stream, CancellationToken token)
+    private static void CaptureDirection(int x, int y, int[] radii)
+    {
+        const int requiredTravel = 512;
+        var radius = (int)MathF.Round(MathF.Sqrt(x * x + y * y));
+        if (radius < requiredTravel) return;
+        var angle = MathF.Atan2(y, x);
+        if (angle < 0) angle += MathF.Tau;
+        var direction = ((int)MathF.Round(angle / (MathF.PI / 4f))) & 7;
+        radii[direction] = Math.Max(radii[direction], radius);
+    }
+
+    private static int CountCapturedDirections(int[] radii) => radii.Count(radius => radius > 0);
+
+    private static (float X, float Y) ApplyDeadzone(float x, float y, float deadzone)
+    {
+        var magnitude = MathF.Sqrt(x * x + y * y);
+        if (magnitude <= deadzone || magnitude == 0) return (0, 0);
+        var outputMagnitude = Math.Clamp((magnitude - deadzone) / (1 - deadzone), 0f, 1f);
+        var scale = outputMagnitude / magnitude;
+        return (x * scale, y * scale);
+    }
+
+    private static async Task TryInitializeUsbAsync(FileStream stream, int inputReportLength,
+        int outputReportLength, CancellationToken token)
     {
         try
         {
             foreach (var commandId in new byte[] { 0x01, 0x02, 0x03, 0x02, 0x04 })
             {
-                var command = new byte[64];
+                var command = new byte[outputReportLength];
                 command[0] = 0x80; command[1] = commandId;
                 await stream.WriteAsync(command, token);
-                var response = new byte[64];
+                var response = new byte[inputReportLength];
                 await stream.ReadAtLeastAsync(response, 1, throwOnEndOfStream: false, token);
             }
         }
         catch (IOException) { }
     }
 
-    private async Task TryEnableFullInputReportsAsync(FileStream stream, CancellationToken token)
+    private async Task TryEnableFullInputReportsAsync(FileStream stream, int outputReportLength,
+        CancellationToken token)
     {
         try
         {
-            await stream.WriteAsync(CreateSubcommand(0x03, 0x30), token);
+            await stream.WriteAsync(CreateSubcommand(outputReportLength, 0x03, 0x30), token);
         }
         catch (IOException) { }
     }
 
-    private async Task TryEnableVibrationAsync(FileStream stream, CancellationToken token)
+    private async Task TryEnableVibrationAsync(FileStream stream, int outputReportLength,
+        CancellationToken token)
     {
-        try { await stream.WriteAsync(CreateSubcommand(0x48, 0x01), token); }
+        try { await stream.WriteAsync(CreateSubcommand(outputReportLength, 0x48, 0x01), token); }
         catch (IOException) { }
     }
 
-    private byte[] CreateSubcommand(byte subcommand, byte argument)
+    private byte[] CreateSubcommand(int outputReportLength, byte subcommand, byte argument)
     {
-        var command = new byte[64];
+        if (outputReportLength < 12) throw new IOException("HID output report is too short.");
+        var command = new byte[outputReportLength];
         command[0] = 0x01;
         command[1] = NextPacketNumber();
         SwitchRumble.SetNeutral(command.AsSpan(2, 4));
@@ -366,7 +579,7 @@ internal sealed class ProControllerInput : IDisposable
         return command;
     }
 
-    private async Task RunRumbleLoopAsync(FileStream stream, CancellationToken token)
+    private async Task RunRumbleLoopAsync(FileStream stream, int outputReportLength, CancellationToken token)
     {
         var lastLeft = -1;
         var lastRight = -1;
@@ -387,7 +600,7 @@ internal sealed class ProControllerInput : IDisposable
                 if ((changed && (lastWrite == 0 || elapsed >= RumbleMinimumWriteTicks)) ||
                     stopImmediately || (active && elapsed >= RumbleRefreshTicks))
                 {
-                    await WriteRumbleAsync(stream, left, right, token);
+                    await WriteRumbleAsync(stream, outputReportLength, left, right, token);
                     lastLeft = left;
                     lastRight = right;
                     lastWrite = Stopwatch.GetTimestamp();
@@ -403,15 +616,17 @@ internal sealed class ProControllerInput : IDisposable
             try
             {
                 using var stopTimeout = new CancellationTokenSource(100);
-                await WriteRumbleAsync(stream, 0, 0, stopTimeout.Token);
+                await WriteRumbleAsync(stream, outputReportLength, 0, 0, stopTimeout.Token);
             }
             catch (Exception ex) when (ex is IOException or OperationCanceledException or ObjectDisposedException) { }
         }
     }
 
-    private async Task WriteRumbleAsync(FileStream stream, int leftMotor, int rightMotor, CancellationToken token)
+    private async Task WriteRumbleAsync(FileStream stream, int outputReportLength, int leftMotor, int rightMotor,
+        CancellationToken token)
     {
-        var report = new byte[64];
+        if (outputReportLength < 10) throw new IOException("HID output report is too short.");
+        var report = new byte[outputReportLength];
         report[0] = 0x10;
         report[1] = NextPacketNumber();
         SwitchRumble.Encode(report.AsSpan(2, 4), (ushort)leftMotor, (ushort)rightMotor);
@@ -447,4 +662,9 @@ internal sealed class ProControllerInput : IDisposable
     {
         public static readonly ControllerSnapshot Disconnected = new(false, 0, 0, 0, 0, GamepadButtonsFlags.None);
     }
+
+    private sealed record RawStickState(int LeftX, int LeftY, int RightX, int RightY);
 }
+
+internal enum CalibrationMode { None, Center, Range }
+internal enum CalibrationResult { None, CenterComplete, RangeComplete, RangeIncomplete, Reset, Disconnected }

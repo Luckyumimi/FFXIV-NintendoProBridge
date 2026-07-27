@@ -2,11 +2,12 @@
   "Name": "Nintendo Pro Bridge",
   "Author": "Sachimi",
   "InternalName": "NintendoProBridge",
-  "AssemblyVersion": "0.3.0.0",
+  "AssemblyVersion": "0.4.2.0",
   "DalamudApiLevel": 15,
   "Punchline": "Nintendo Pro controller for FFXIV\n让最终幻想14支持SwitchPro手柄",
   "Description": "在游戏进程内直接将官方 Pro 手柄输入翻译为 FFXIV 手柄输入，不创建虚拟设备、不隐藏系统手柄。使用 /npro 打开设置。",
   "RepoUrl": "https://github.com/Luckyumimi/FFXIV-NintendoProBridge",
+  "IconUrl": "https://raw.githubusercontent.com/Luckyumimi/MyDalamudPlugins/master/plugins/NintendoProBridge/icon.png",
   "ApplicableVersion": "any",
   "Tags": [ "controller", "input", "nintendo" ]
 }

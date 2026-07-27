@@ -29,10 +29,15 @@ public sealed class Plugin : IDalamudPlugin
         var settingsPath = Path.Combine(configDirectory, "settings.json");
         var firstRun = !File.Exists(settingsPath);
         var settings = PluginSettings.Load(settingsPath);
+        var saveLock = new object();
+        Action saveSettings = () =>
+        {
+            lock (saveLock) Save(settingsPath, settings);
+        };
 
-        controllerInput = new ProControllerInput(interop, settings);
+        controllerInput = new ProControllerInput(interop, settings, saveSettings);
         settingsWindow = new SettingsWindow(settings, controllerInput,
-            () => Save(settingsPath, settings), () => pluginInterface.UiLanguage);
+            saveSettings, () => pluginInterface.UiLanguage);
         windowSystem.AddWindow(settingsWindow);
 
         pluginInterface.UiBuilder.Draw += Draw;
@@ -114,6 +119,32 @@ internal sealed class SettingsWindow : Window
         if (!string.IsNullOrWhiteSpace(controller.LastError))
             ImGui.TextColored(new Vector4(1f, .55f, .3f, 1f), T("readError"));
 
+        var devices = controller.AvailableDevices;
+        var selectedDevice = devices.FirstOrDefault(device =>
+            string.Equals(device.Path, settings.SelectedDevicePath, StringComparison.OrdinalIgnoreCase));
+        var devicePreview = string.IsNullOrWhiteSpace(settings.SelectedDevicePath)
+            ? T("automaticDevice")
+            : selectedDevice?.DisplayName ?? T("selectedDeviceMissing");
+        ImGui.Text(T("controllerDevice"));
+        ImGui.SetNextItemWidth(-1);
+        if (ImGui.BeginCombo("##controllerDevice", devicePreview))
+        {
+            var automatic = string.IsNullOrWhiteSpace(settings.SelectedDevicePath);
+            if (ImGui.Selectable(T("automaticDevice"), automatic)) controller.SelectDevice(null);
+            if (automatic) ImGui.SetItemDefaultFocus();
+            for (var index = 0; index < devices.Count; index++)
+            {
+                var device = devices[index];
+                var selected = string.Equals(device.Path, settings.SelectedDevicePath,
+                    StringComparison.OrdinalIgnoreCase);
+                if (ImGui.Selectable($"{device.DisplayName}##device{index}", selected))
+                    controller.SelectDevice(device.Path);
+                if (selected) ImGui.SetItemDefaultFocus();
+            }
+            ImGui.EndCombo();
+        }
+        if (ImGui.Button(T("refreshDevices"))) controller.RefreshDevices();
+
         ImGui.Separator();
         var changed = false;
         var enabled = settings.Enabled;
@@ -159,6 +190,53 @@ internal sealed class SettingsWindow : Window
         settings.RightDeadzone = rightDeadzone;
         if (changed) save();
 
+        ImGui.Separator();
+        ImGui.Text(T("stickCalibration"));
+        ImGui.TextWrapped(T("calibrationGuide"));
+        var calibrationMode = controller.CurrentCalibrationMode;
+        if (calibrationMode == CalibrationMode.None)
+        {
+            if (!controller.IsConnected) ImGui.BeginDisabled();
+            if (ImGui.Button(T("calibrateCenter"))) controller.StartCenterCalibration();
+            ImGui.SameLine();
+            if (ImGui.Button(T("calibrateRange"))) controller.StartRangeCalibration();
+            if (!controller.IsConnected) ImGui.EndDisabled();
+            ImGui.SameLine();
+            if (ImGui.Button(T("resetCalibration"))) controller.ResetCalibration();
+        }
+        else if (calibrationMode == CalibrationMode.Center)
+        {
+            ImGui.TextColored(new Vector4(1f, .75f, .2f, 1f), T("centerInProgress"));
+            if (ImGui.Button(T("cancelCalibration"))) controller.CancelCalibration();
+        }
+        else
+        {
+            ImGui.TextColored(new Vector4(1f, .75f, .2f, 1f),
+                string.Format(T("rangeInProgress"), controller.LeftRangeDirectionsCaptured,
+                    controller.RightRangeDirectionsCaptured));
+            if (ImGui.Button(T("finishCalibration"))) controller.FinishRangeCalibration();
+            ImGui.SameLine();
+            if (ImGui.Button(T("cancelCalibration"))) controller.CancelCalibration();
+        }
+
+        var calibrationResult = controller.LastCalibrationResult;
+        if (calibrationResult != CalibrationResult.None)
+        {
+            var successful = calibrationResult != CalibrationResult.RangeIncomplete;
+            var resultKey = calibrationResult switch
+            {
+                CalibrationResult.CenterComplete => "centerComplete",
+                CalibrationResult.RangeComplete => "rangeComplete",
+                CalibrationResult.RangeIncomplete => "rangeIncomplete",
+                CalibrationResult.Reset => "calibrationReset",
+                CalibrationResult.Disconnected => "calibrationDisconnected",
+                _ => "calibrationReset",
+            };
+            ImGui.TextColored(successful
+                ? new Vector4(.3f, 1f, .45f, 1f)
+                : new Vector4(1f, .55f, .3f, 1f), T(resultKey));
+        }
+
         ImGui.Spacing();
         ImGui.TextDisabled(T("command"));
     }
@@ -181,6 +259,10 @@ internal static class LocalizedText
         ["activeDetail"] = ["FFXIV 手柄输入已启用。", "FFXIV gamepad input is active.", "FFXIV-Gamepad-Eingabe ist aktiv.", "L’entrée manette de FFXIV est active.", "FFXIV 控制器輸入已啟用。", "FFXIV 게임패드 입력이 활성화되었습니다.", "FFXIVのゲームパッド入力が有効です。"],
         ["connectDetail"] = ["连接手柄并按任意键。若 Steam 独占了设备，请关闭该游戏的 Steam Input 后重连。", "Connect the controller and press any button. If Steam has exclusive access, disable Steam Input for this game and reconnect.", "Controller verbinden und eine Taste drücken. Falls Steam exklusiv zugreift, Steam Input für dieses Spiel deaktivieren und neu verbinden.", "Connectez la manette et appuyez sur un bouton. Si Steam y accède exclusivement, désactivez Steam Input pour ce jeu puis reconnectez-la.", "連接控制器並按任意鍵。若 Steam 獨佔裝置，請關閉此遊戲的 Steam Input 後重新連線。", "컨트롤러를 연결하고 아무 버튼이나 누르세요. Steam이 장치를 독점하면 이 게임의 Steam Input을 끄고 다시 연결하세요.", "コントローラーを接続してボタンを押してください。Steamが占有している場合は、このゲームのSteam Inputを無効にして再接続してください。"],
         ["readError"] = ["手柄存在但暂时无法读取，可能正被 Steam 或其他手柄工具独占。", "The controller exists but cannot currently be read; Steam or another controller tool may have exclusive access.", "Der Controller ist vorhanden, kann aber nicht gelesen werden; Steam oder ein anderes Tool könnte exklusiv zugreifen.", "La manette est présente mais illisible ; Steam ou un autre outil peut disposer d'un accès exclusif.", "控制器存在但暫時無法讀取，可能正被 Steam 或其他工具獨佔。", "컨트롤러가 있지만 읽을 수 없습니다. Steam 또는 다른 도구가 독점 중일 수 있습니다.", "コントローラーは存在しますが読み取れません。Steamなどが占有している可能性があります。"],
+        ["controllerDevice"] = ["手柄设备", "Controller device", "Controller-Gerät", "Périphérique de manette", "控制器裝置", "컨트롤러 장치", "コントローラー機器"],
+        ["automaticDevice"] = ["自动选择", "Select automatically", "Automatisch auswählen", "Sélection automatique", "自動選擇", "자동 선택", "自動選択"],
+        ["selectedDeviceMissing"] = ["已选设备未连接", "Selected device is not connected", "Ausgewähltes Gerät ist nicht verbunden", "Le périphérique sélectionné n’est pas connecté", "已選裝置未連接", "선택한 장치가 연결되지 않았습니다", "選択した機器が接続されていません"],
+        ["refreshDevices"] = ["刷新设备", "Refresh devices", "Geräte aktualisieren", "Actualiser les périphériques", "重新整理裝置", "장치 새로고침", "機器を更新"],
         ["language"] = ["界面语言", "Interface language", "Oberflächensprache", "Langue de l’interface", "介面語言", "인터페이스 언어", "表示言語"],
         ["autoLanguage"] = ["跟随游戏", "Follow game language", "Spielsprache verwenden", "Suivre la langue du jeu", "跟隨遊戲", "게임 언어 따르기", "ゲーム言語に合わせる"],
         ["enabled"] = ["启用手柄适配", "Enable controller support", "Controller-Unterstützung aktivieren", "Activer la prise en charge de la manette", "啟用控制器適配", "컨트롤러 지원 활성화", "コントローラー対応を有効にする"],
@@ -190,6 +272,20 @@ internal static class LocalizedText
         ["swapXy"] = ["交换 X / Y", "Swap X / Y", "X / Y tauschen", "Inverser X / Y", "交換 X / Y", "X / Y 교체", "X / Y を入れ替える"],
         ["leftDeadzone"] = ["左摇杆死区", "Left stick deadzone", "Totzone linker Stick", "Zone morte du stick gauche", "左搖桿死區", "왼쪽 스틱 데드존", "左スティックのデッドゾーン"],
         ["rightDeadzone"] = ["右摇杆死区", "Right stick deadzone", "Totzone rechter Stick", "Zone morte du stick droit", "右搖桿死區", "오른쪽 스틱 데드존", "右スティックのデッドゾーン"],
+        ["stickCalibration"] = ["摇杆校准", "Stick calibration", "Stick-Kalibrierung", "Calibrage des sticks", "搖桿校準", "스틱 보정", "スティック調整"],
+        ["calibrationGuide"] = ["先让双摇杆回中进行回中校准，再开始满推校准并将两个摇杆沿外圈完整转动。", "Calibrate the centered sticks first. Then start full-range calibration and rotate both sticks around their full outer edge.", "Zuerst beide Sticks in Mittelstellung kalibrieren. Danach die Bereichskalibrierung starten und beide Sticks vollständig am Rand entlang drehen.", "Calibrez d’abord les sticks au repos, puis lancez le calibrage complet et faites tourner les deux sticks sur tout leur contour.", "先讓雙搖桿回中進行回中校準，再開始滿推校準並將兩個搖桿沿外圈完整轉動。", "먼저 두 스틱의 중앙을 보정한 뒤 전체 범위 보정을 시작하고 두 스틱을 바깥쪽 가장자리를 따라 완전히 돌리세요.", "まず両スティックを中央に戻して中央調整を行い、その後フルレンジ調整を開始して両方を外周いっぱいに回してください。"],
+        ["calibrateCenter"] = ["回中校准", "Calibrate center", "Mitte kalibrieren", "Calibrer le centre", "回中校準", "중앙 보정", "中央を調整"],
+        ["calibrateRange"] = ["满推校准", "Full-range calibration", "Bereich kalibrieren", "Calibrer la course", "滿推校準", "전체 범위 보정", "フルレンジ調整"],
+        ["resetCalibration"] = ["重置", "Reset", "Zurücksetzen", "Réinitialiser", "重設", "초기화", "リセット"],
+        ["centerInProgress"] = ["请松开双摇杆，正在采样（1 秒）…", "Release both sticks. Sampling for 1 second…", "Beide Sticks loslassen. Messung läuft 1 Sekunde…", "Relâchez les deux sticks. Mesure pendant 1 seconde…", "請鬆開雙搖桿，正在取樣（1 秒）…", "두 스틱에서 손을 떼세요. 1초 동안 측정합니다…", "両スティックから手を離してください。1秒間測定します…"],
+        ["rangeInProgress"] = ["沿外圈转动摇杆：左 {0}/8，右 {1}/8。", "Rotate the sticks around the outer edge: left {0}/8, right {1}/8.", "Sticks am Rand entlang drehen: links {0}/8, rechts {1}/8.", "Faites tourner les sticks sur le contour : gauche {0}/8, droite {1}/8.", "沿外圈轉動搖桿：左 {0}/8，右 {1}/8。", "스틱을 바깥쪽 가장자리를 따라 돌리세요: 왼쪽 {0}/8, 오른쪽 {1}/8.", "スティックを外周に沿って回してください：左 {0}/8、右 {1}/8。"],
+        ["finishCalibration"] = ["完成", "Finish", "Abschließen", "Terminer", "完成", "완료", "完了"],
+        ["cancelCalibration"] = ["取消", "Cancel", "Abbrechen", "Annuler", "取消", "취소", "キャンセル"],
+        ["centerComplete"] = ["回中校准完成。", "Center calibration complete.", "Mittelstellung kalibriert.", "Calibrage du centre terminé.", "回中校準完成。", "중앙 보정이 완료되었습니다.", "中央調整が完了しました。"],
+        ["rangeComplete"] = ["满推校准完成。", "Full-range calibration complete.", "Bereichskalibrierung abgeschlossen.", "Calibrage de la course terminé.", "滿推校準完成。", "전체 범위 보정이 완료되었습니다.", "フルレンジ調整が完了しました。"],
+        ["rangeIncomplete"] = ["每根摇杆都需要记录 8 个端点，请继续沿外圈转动。", "Each stick needs all 8 endpoints. Keep rotating them around the outer edge.", "Für jeden Stick werden alle 8 Endpunkte benötigt. Weiter am Rand entlang drehen.", "Chaque stick doit enregistrer ses 8 extrémités. Continuez à les faire tourner sur le contour.", "每根搖桿都需要記錄 8 個端點，請繼續沿外圈轉動。", "각 스틱마다 8개 끝점이 모두 필요합니다. 바깥쪽 가장자리를 따라 계속 돌리세요.", "各スティックで8つすべての端点が必要です。外周に沿って回し続けてください。"],
+        ["calibrationReset"] = ["摇杆校准已重置。", "Stick calibration reset.", "Stick-Kalibrierung zurückgesetzt.", "Calibrage des sticks réinitialisé.", "搖桿校準已重設。", "스틱 보정이 초기화되었습니다.", "スティック調整をリセットしました。"],
+        ["calibrationDisconnected"] = ["手柄已断开，校准已取消。", "Controller disconnected; calibration cancelled.", "Controller getrennt; Kalibrierung abgebrochen.", "Manette déconnectée ; calibrage annulé.", "控制器已中斷連線，校準已取消。", "컨트롤러 연결이 끊겨 보정이 취소되었습니다.", "コントローラーが切断されたため、調整を中止しました。"],
         ["command"] = ["设置命令：/npro", "Settings command: /npro", "Einstellungsbefehl: /npro", "Commande des paramètres : /npro", "設定指令：/npro", "설정 명령어: /npro", "設定コマンド：/npro"],
     };
 
@@ -213,11 +309,94 @@ public sealed class PluginSettings
     public bool SwapXy { get; set; }
     public float LeftDeadzone { get; set; } = .35f;
     public float RightDeadzone { get; set; } = .35f;
+    public string? SelectedDevicePath { get; set; }
+    public StickCalibration LeftStickCalibration { get; set; } = new();
+    public StickCalibration RightStickCalibration { get; set; } = new();
     public static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
     public static PluginSettings Load(string path)
     {
-        try { return JsonSerializer.Deserialize<PluginSettings>(File.ReadAllText(path), JsonOptions) ?? new(); }
+        try
+        {
+            var settings = JsonSerializer.Deserialize<PluginSettings>(File.ReadAllText(path), JsonOptions) ?? new();
+            settings.LeftStickCalibration ??= new();
+            settings.RightStickCalibration ??= new();
+            settings.LeftStickCalibration.Validate();
+            settings.RightStickCalibration.Validate();
+            return settings;
+        }
         catch (Exception ex) when (ex is IOException or JsonException) { return new(); }
+    }
+}
+
+public sealed class StickCalibration
+{
+    private const int MaximumRadius = 5792;
+    public int CenterX { get; set; } = 2048;
+    public int CenterY { get; set; } = 2048;
+    public int MinimumX { get; set; } = 500;
+    public int MaximumX { get; set; } = 3500;
+    public int MinimumY { get; set; } = 500;
+    public int MaximumY { get; set; } = 3500;
+    public int[] DirectionalRanges { get; set; } = CreateDefaultDirectionalRanges();
+
+    public void SetCenter(int x, int y)
+    {
+        CenterX = Math.Clamp(x, 1, 4094);
+        CenterY = Math.Clamp(y, 1, 4094);
+        Validate();
+    }
+
+    public void SetDirectionalRanges(IReadOnlyList<int> ranges)
+    {
+        if (ranges.Count != 8) throw new ArgumentException("Eight directional ranges are required.", nameof(ranges));
+        DirectionalRanges = ranges.Select(radius => Math.Clamp(radius, 256, MaximumRadius)).ToArray();
+        MaximumX = Math.Clamp(CenterX + DirectionalRanges[0], CenterX + 1, 4095);
+        MaximumY = Math.Clamp(CenterY + DirectionalRanges[2], CenterY + 1, 4095);
+        MinimumX = Math.Clamp(CenterX - DirectionalRanges[4], 0, CenterX - 1);
+        MinimumY = Math.Clamp(CenterY - DirectionalRanges[6], 0, CenterY - 1);
+        Validate();
+    }
+
+    public void Reset()
+    {
+        CenterX = CenterY = 2048;
+        MinimumX = MinimumY = 500;
+        MaximumX = MaximumY = 3500;
+        DirectionalRanges = CreateDefaultDirectionalRanges();
+    }
+
+    public void Validate()
+    {
+        CenterX = Math.Clamp(CenterX, 1, 4094);
+        CenterY = Math.Clamp(CenterY, 1, 4094);
+        MinimumX = Math.Clamp(MinimumX, 0, CenterX - 1);
+        MaximumX = Math.Clamp(MaximumX, CenterX + 1, 4095);
+        MinimumY = Math.Clamp(MinimumY, 0, CenterY - 1);
+        MaximumY = Math.Clamp(MaximumY, CenterY + 1, 4095);
+        if (DirectionalRanges is null || DirectionalRanges.Length != 8)
+            DirectionalRanges = CreateDirectionalRangesFromAxes();
+        else
+            DirectionalRanges = DirectionalRanges.Select(radius =>
+                Math.Clamp(radius, 256, MaximumRadius)).ToArray();
+    }
+
+    private static int[] CreateDefaultDirectionalRanges() =>
+        Enumerable.Repeat(1500, 8).ToArray();
+
+    private int[] CreateDirectionalRangesFromAxes()
+    {
+        var ranges = new int[8];
+        for (var index = 0; index < ranges.Length; index++)
+        {
+            var angle = index * Math.PI / 4;
+            var cos = Math.Cos(angle);
+            var sin = Math.Sin(angle);
+            var xRadius = cos >= 0 ? MaximumX - CenterX : CenterX - MinimumX;
+            var yRadius = sin >= 0 ? MaximumY - CenterY : CenterY - MinimumY;
+            var inverseSquared = cos * cos / (xRadius * xRadius) + sin * sin / (yRadius * yRadius);
+            ranges[index] = Math.Clamp((int)Math.Round(1 / Math.Sqrt(inverseSquared)), 256, MaximumRadius);
+        }
+        return ranges;
     }
 }

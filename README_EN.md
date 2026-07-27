@@ -9,9 +9,11 @@ The plugin reads the controller directly and operates only inside the FFXIV proc
 ## Features
 
 - USB and Bluetooth support.
+- Automatic or manual selection of the Pro Controller to use.
 - Sticks, D-pad, face buttons, shoulder buttons, triggers, Plus/Minus, and stick clicks.
 - Optional A/B and X/Y swaps.
 - Independent deadzone settings for both sticks.
+- Center and full-range calibration with 8 independently recorded endpoints for each stick.
 - Game rumble support with a test button in the settings window.
 - Simplified Chinese, Traditional Chinese, Japanese, English, German, French, and Korean interfaces.
 
@@ -30,6 +32,8 @@ Search for and install `Nintendo Pro Bridge`.
 Connect the controller and start the game. Use `/npro` to open or close the settings window.
 
 Rumble is enabled by default. It can be disabled or tested from the settings window. In-game rumble strength is controlled by FFXIV's gamepad settings.
+
+If full stick movement does not reach normal speed, run center calibration first. Then start full-range calibration, rotate both sticks around their complete outer edge, and select Finish.
 
 If the plugin cannot read the controller, disable Steam Input for FFXIV and reconnect it.
 
