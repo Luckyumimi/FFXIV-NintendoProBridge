@@ -2,7 +2,7 @@
 
 [English](README_EN.md)
 
-让最终幻想14识别并正常使用官方 Nintendo Switch Pro 手柄的 Dalamud 插件。
+让 最终幻想14 识别并正常使用官方 Nintendo Switch Pro 手柄的 Dalamud 插件。
 
 插件直接读取手柄输入，只在 FFXIV 进程内生效，无需驱动、虚拟手柄或管理员权限。
 
