@@ -182,13 +182,16 @@ internal sealed class ProControllerInput : IDisposable
                     Volatile.Write(ref lastError, null);
                     Interlocked.Exchange(ref packetNumber, 0);
                     StopRumble();
-                    if (device.IsUsb) await TryInitializeUsbAsync(device.Stream, token);
-                    await TryEnableVibrationAsync(device.Stream, token);
+                    if (device.IsUsb)
+                        await TryInitializeUsbAsync(device.Stream, device.InputReportLength,
+                            device.OutputReportLength, token);
+                    await TryEnableVibrationAsync(device.Stream, device.OutputReportLength, token);
                     await Task.Delay(10, token);
-                    await TryEnableFullInputReportsAsync(device.Stream, token);
+                    await TryEnableFullInputReportsAsync(device.Stream, device.OutputReportLength, token);
                     using var connectionCancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
-                    var rumbleTask = RunRumbleLoopAsync(device.Stream, connectionCancellation.Token);
-                    var report = new byte[64];
+                    var rumbleTask = RunRumbleLoopAsync(device.Stream, device.OutputReportLength,
+                        connectionCancellation.Token);
+                    var report = new byte[device.InputReportLength];
                     try
                     {
                         while (!token.IsCancellationRequested)
@@ -323,40 +326,44 @@ internal sealed class ProControllerInput : IDisposable
         return Math.Clamp(MathF.Sign(value) * (magnitude - deadzone) / (1 - deadzone), -1f, 1f);
     }
 
-    private static async Task TryInitializeUsbAsync(FileStream stream, CancellationToken token)
+    private static async Task TryInitializeUsbAsync(FileStream stream, int inputReportLength,
+        int outputReportLength, CancellationToken token)
     {
         try
         {
             foreach (var commandId in new byte[] { 0x01, 0x02, 0x03, 0x02, 0x04 })
             {
-                var command = new byte[64];
+                var command = new byte[outputReportLength];
                 command[0] = 0x80; command[1] = commandId;
                 await stream.WriteAsync(command, token);
-                var response = new byte[64];
+                var response = new byte[inputReportLength];
                 await stream.ReadAtLeastAsync(response, 1, throwOnEndOfStream: false, token);
             }
         }
         catch (IOException) { }
     }
 
-    private async Task TryEnableFullInputReportsAsync(FileStream stream, CancellationToken token)
+    private async Task TryEnableFullInputReportsAsync(FileStream stream, int outputReportLength,
+        CancellationToken token)
     {
         try
         {
-            await stream.WriteAsync(CreateSubcommand(0x03, 0x30), token);
+            await stream.WriteAsync(CreateSubcommand(outputReportLength, 0x03, 0x30), token);
         }
         catch (IOException) { }
     }
 
-    private async Task TryEnableVibrationAsync(FileStream stream, CancellationToken token)
+    private async Task TryEnableVibrationAsync(FileStream stream, int outputReportLength,
+        CancellationToken token)
     {
-        try { await stream.WriteAsync(CreateSubcommand(0x48, 0x01), token); }
+        try { await stream.WriteAsync(CreateSubcommand(outputReportLength, 0x48, 0x01), token); }
         catch (IOException) { }
     }
 
-    private byte[] CreateSubcommand(byte subcommand, byte argument)
+    private byte[] CreateSubcommand(int outputReportLength, byte subcommand, byte argument)
     {
-        var command = new byte[64];
+        if (outputReportLength < 12) throw new IOException("HID output report is too short.");
+        var command = new byte[outputReportLength];
         command[0] = 0x01;
         command[1] = NextPacketNumber();
         SwitchRumble.SetNeutral(command.AsSpan(2, 4));
@@ -366,7 +373,7 @@ internal sealed class ProControllerInput : IDisposable
         return command;
     }
 
-    private async Task RunRumbleLoopAsync(FileStream stream, CancellationToken token)
+    private async Task RunRumbleLoopAsync(FileStream stream, int outputReportLength, CancellationToken token)
     {
         var lastLeft = -1;
         var lastRight = -1;
@@ -387,7 +394,7 @@ internal sealed class ProControllerInput : IDisposable
                 if ((changed && (lastWrite == 0 || elapsed >= RumbleMinimumWriteTicks)) ||
                     stopImmediately || (active && elapsed >= RumbleRefreshTicks))
                 {
-                    await WriteRumbleAsync(stream, left, right, token);
+                    await WriteRumbleAsync(stream, outputReportLength, left, right, token);
                     lastLeft = left;
                     lastRight = right;
                     lastWrite = Stopwatch.GetTimestamp();
@@ -403,15 +410,17 @@ internal sealed class ProControllerInput : IDisposable
             try
             {
                 using var stopTimeout = new CancellationTokenSource(100);
-                await WriteRumbleAsync(stream, 0, 0, stopTimeout.Token);
+                await WriteRumbleAsync(stream, outputReportLength, 0, 0, stopTimeout.Token);
             }
             catch (Exception ex) when (ex is IOException or OperationCanceledException or ObjectDisposedException) { }
         }
     }
 
-    private async Task WriteRumbleAsync(FileStream stream, int leftMotor, int rightMotor, CancellationToken token)
+    private async Task WriteRumbleAsync(FileStream stream, int outputReportLength, int leftMotor, int rightMotor,
+        CancellationToken token)
     {
-        var report = new byte[64];
+        if (outputReportLength < 10) throw new IOException("HID output report is too short.");
+        var report = new byte[outputReportLength];
         report[0] = 0x10;
         report[1] = NextPacketNumber();
         SwitchRumble.Encode(report.AsSpan(2, 4), (ushort)leftMotor, (ushort)rightMotor);

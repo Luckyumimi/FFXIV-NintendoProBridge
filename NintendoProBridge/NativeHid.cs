@@ -13,7 +13,8 @@ internal static class NativeHid
     private const uint FileShareWrite = 0x00000002;
     private const uint OpenExisting = 3;
     private const uint FileFlagOverlapped = 0x40000000;
-    private const string ProId = "vid_057e&pid_2009";
+    private const string UsbProId = "vid_057e&pid_2009";
+    private const string BluetoothProId = "vid&0002057e_pid&2009";
 
     public static NativeHidDevice? TryOpenNintendoPro()
     {
@@ -40,7 +41,7 @@ internal static class NativeHid
                     if (!SetupDiGetDeviceInterfaceDetailW(infoSet, ref interfaceData, detail, required, out _, 0))
                         continue;
                     var path = Marshal.PtrToStringUni(detail + 4) ?? string.Empty;
-                    if (!path.Contains(ProId, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (!IsNintendoProPath(path)) continue;
 
                     var handle = CreateFileW(path, GenericRead | GenericWrite, FileShareRead | FileShareWrite,
                         0, OpenExisting, FileFlagOverlapped, 0);
@@ -51,8 +52,12 @@ internal static class NativeHid
                     }
 
                     var serial = ReadSerial(handle);
-                    var stream = new FileStream(handle, FileAccess.ReadWrite, 64, isAsync: true);
-                    return new NativeHidDevice(stream, string.Equals(serial, "000000000001", StringComparison.Ordinal));
+                    var (inputReportLength, outputReportLength) = ReadReportLengths(handle);
+                    var bufferSize = Math.Max(inputReportLength, outputReportLength);
+                    var stream = new FileStream(handle, FileAccess.ReadWrite, bufferSize, isAsync: true);
+                    return new NativeHidDevice(stream,
+                        string.Equals(serial, "000000000001", StringComparison.Ordinal),
+                        inputReportLength, outputReportLength);
                 }
                 finally { Marshal.FreeHGlobal(detail); }
             }
@@ -60,6 +65,10 @@ internal static class NativeHid
         finally { SetupDiDestroyDeviceInfoList(infoSet); }
         return null;
     }
+
+    private static bool IsNintendoProPath(string path) =>
+        path.Contains(UsbProId, StringComparison.OrdinalIgnoreCase) ||
+        path.Contains(BluetoothProId, StringComparison.OrdinalIgnoreCase);
 
     private static string? ReadSerial(SafeFileHandle handle)
     {
@@ -72,6 +81,18 @@ internal static class NativeHid
         finally { Marshal.FreeHGlobal(buffer); }
     }
 
+    private static (int Input, int Output) ReadReportLengths(SafeFileHandle handle)
+    {
+        if (!HidD_GetPreparsedData(handle, out var preparsedData)) return (64, 64);
+        try
+        {
+            if (HidP_GetCaps(preparsedData, out var caps) < 0) return (64, 64);
+            return (Math.Max(caps.InputReportByteLength, (ushort)1),
+                Math.Max(caps.OutputReportByteLength, (ushort)1));
+        }
+        finally { HidD_FreePreparsedData(preparsedData); }
+    }
+
     [StructLayout(LayoutKind.Sequential)]
     private struct SpDeviceInterfaceData
     {
@@ -81,12 +102,44 @@ internal static class NativeHid
         public nuint Reserved;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private unsafe struct HidpCaps
+    {
+        public ushort Usage;
+        public ushort UsagePage;
+        public ushort InputReportByteLength;
+        public ushort OutputReportByteLength;
+        public ushort FeatureReportByteLength;
+        public fixed ushort Reserved[17];
+        public ushort NumberLinkCollectionNodes;
+        public ushort NumberInputButtonCaps;
+        public ushort NumberInputValueCaps;
+        public ushort NumberInputDataIndices;
+        public ushort NumberOutputButtonCaps;
+        public ushort NumberOutputValueCaps;
+        public ushort NumberOutputDataIndices;
+        public ushort NumberFeatureButtonCaps;
+        public ushort NumberFeatureValueCaps;
+        public ushort NumberFeatureDataIndices;
+    }
+
     [DllImport("hid.dll")]
     private static extern void HidD_GetHidGuid(out Guid hidGuid);
 
     [DllImport("hid.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool HidD_GetSerialNumberString(SafeFileHandle device, nint buffer, uint bufferLength);
+
+    [DllImport("hid.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool HidD_GetPreparsedData(SafeFileHandle device, out nint preparsedData);
+
+    [DllImport("hid.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool HidD_FreePreparsedData(nint preparsedData);
+
+    [DllImport("hid.dll")]
+    private static extern int HidP_GetCaps(nint preparsedData, out HidpCaps capabilities);
 
     [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern nint SetupDiGetClassDevsW(ref Guid classGuid, string? enumerator, nint hwndParent, uint flags);
@@ -111,4 +164,4 @@ internal static class NativeHid
         nint securityAttributes, uint creationDisposition, uint flagsAndAttributes, nint templateFile);
 }
 
-internal sealed record NativeHidDevice(FileStream Stream, bool IsUsb);
+internal sealed record NativeHidDevice(FileStream Stream, bool IsUsb, int InputReportLength, int OutputReportLength);
