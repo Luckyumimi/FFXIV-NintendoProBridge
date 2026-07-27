@@ -6,6 +6,10 @@ A Dalamud plugin that lets FFXIV recognize and use an official Nintendo Switch P
 
 The plugin reads the controller directly and operates only inside the FFXIV process. No driver, virtual controller, or administrator access is required.
 
+## Example
+
+![Nintendo Pro Bridge settings window example](https://raw.githubusercontent.com/Luckyumimi/FFXIV-NintendoProBridge/main/example.png)
+
 ## Features
 
 - USB and Bluetooth support.

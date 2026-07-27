@@ -6,6 +6,10 @@
 
 このプラグインはコントローラー入力を直接読み取り、FFXIV プロセス内でのみ動作します。ドライバー、仮想コントローラー、管理者権限は必要ありません。
 
+## 例
+
+![Nintendo Pro Bridge の設定ウィンドウ例](https://raw.githubusercontent.com/Luckyumimi/FFXIV-NintendoProBridge/main/example.png)
+
 ## 機能
 
 - USB 接続と Bluetooth 接続に対応。

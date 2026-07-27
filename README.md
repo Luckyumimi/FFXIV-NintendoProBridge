@@ -6,6 +6,10 @@
 
 插件直接读取手柄输入，只在 FFXIV 进程内生效，无需驱动、虚拟手柄或管理员权限。
 
+## 示例
+
+![Nintendo Pro Bridge 设置窗口示例](https://raw.githubusercontent.com/Luckyumimi/FFXIV-NintendoProBridge/main/example.png)
+
 ## 功能
 
 - 支持 USB 和蓝牙连接。

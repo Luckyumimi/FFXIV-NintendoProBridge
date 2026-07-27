@@ -6,6 +6,10 @@
 
 플러그인은 컨트롤러 입력을 직접 읽으며 FFXIV 프로세스 안에서만 작동합니다. 드라이버, 가상 컨트롤러 또는 관리자 권한이 필요하지 않습니다.
 
+## 예시
+
+![Nintendo Pro Bridge 설정 창 예시](https://raw.githubusercontent.com/Luckyumimi/FFXIV-NintendoProBridge/main/example.png)
+
 ## 기능
 
 - USB 및 Bluetooth 연결 지원.
