@@ -7,7 +7,7 @@ namespace NintendoProBridge;
 
 internal sealed class ProControllerInput : IDisposable
 {
-    private const int StickRange = 1000;
+    private const int StickRange = 99;
     private static readonly long InitialRepeatTicks = Stopwatch.Frequency / 2;
     private static readonly long RepeatTicks = Stopwatch.Frequency / 15;
     private static readonly long RumbleMinimumWriteTicks = Stopwatch.Frequency * 30 / 1000;
