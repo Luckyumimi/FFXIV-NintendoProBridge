@@ -117,6 +117,7 @@ internal sealed class SettingsWindow : Window
         ImGui.Separator();
         var changed = false;
         var enabled = settings.Enabled;
+        var enableRumble = settings.EnableRumble;
         var swapAb = settings.SwapAb;
         var swapXy = settings.SwapXy;
         var leftDeadzone = settings.LeftDeadzone;
@@ -141,11 +142,17 @@ internal sealed class SettingsWindow : Window
             ImGui.EndCombo();
         }
         changed |= ImGui.Checkbox(T("enabled"), ref enabled);
+        changed |= ImGui.Checkbox(T("enableRumble"), ref enableRumble);
+        ImGui.SameLine();
+        if (!controller.IsConnected || !enabled || !enableRumble) ImGui.BeginDisabled();
+        if (ImGui.Button(T("testRumble"))) controller.TestRumble();
+        if (!controller.IsConnected || !enabled || !enableRumble) ImGui.EndDisabled();
         changed |= ImGui.Checkbox(T("swapAb"), ref swapAb);
         changed |= ImGui.Checkbox(T("swapXy"), ref swapXy);
         changed |= ImGui.SliderFloat(T("leftDeadzone"), ref leftDeadzone, 0f, .5f, "%.2f");
         changed |= ImGui.SliderFloat(T("rightDeadzone"), ref rightDeadzone, 0f, .5f, "%.2f");
         settings.Enabled = enabled;
+        settings.EnableRumble = enableRumble;
         settings.SwapAb = swapAb;
         settings.SwapXy = swapXy;
         settings.LeftDeadzone = leftDeadzone;
@@ -177,6 +184,8 @@ internal static class LocalizedText
         ["language"] = ["界面语言", "Interface language", "Oberflächensprache", "Langue de l’interface", "介面語言", "인터페이스 언어", "表示言語"],
         ["autoLanguage"] = ["跟随游戏", "Follow game language", "Spielsprache verwenden", "Suivre la langue du jeu", "跟隨遊戲", "게임 언어 따르기", "ゲーム言語に合わせる"],
         ["enabled"] = ["启用手柄适配", "Enable controller support", "Controller-Unterstützung aktivieren", "Activer la prise en charge de la manette", "啟用控制器適配", "컨트롤러 지원 활성화", "コントローラー対応を有効にする"],
+        ["enableRumble"] = ["启用震动", "Enable rumble", "Vibration aktivieren", "Activer les vibrations", "啟用震動", "진동 활성화", "振動を有効にする"],
+        ["testRumble"] = ["测试", "Test", "Testen", "Tester", "測試", "테스트", "テスト"],
         ["swapAb"] = ["交换 A / B", "Swap A / B", "A / B tauschen", "Inverser A / B", "交換 A / B", "A / B 교체", "A / B を入れ替える"],
         ["swapXy"] = ["交换 X / Y", "Swap X / Y", "X / Y tauschen", "Inverser X / Y", "交換 X / Y", "X / Y 교체", "X / Y を入れ替える"],
         ["leftDeadzone"] = ["左摇杆死区", "Left stick deadzone", "Totzone linker Stick", "Zone morte du stick gauche", "左搖桿死區", "왼쪽 스틱 데드존", "左スティックのデッドゾーン"],
@@ -199,6 +208,7 @@ public sealed class PluginSettings
 {
     public string Language { get; set; } = "auto";
     public bool Enabled { get; set; } = true;
+    public bool EnableRumble { get; set; } = true;
     public bool SwapAb { get; set; }
     public bool SwapXy { get; set; }
     public float LeftDeadzone { get; set; } = .35f;

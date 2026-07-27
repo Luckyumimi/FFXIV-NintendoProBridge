@@ -12,6 +12,7 @@ The plugin reads the controller directly and operates only inside the FFXIV proc
 - Sticks, D-pad, face buttons, shoulder buttons, triggers, Plus/Minus, and stick clicks.
 - Optional A/B and X/Y swaps.
 - Independent deadzone settings for both sticks.
+- Game rumble support with a test button in the settings window.
 - Simplified Chinese, Traditional Chinese, Japanese, English, German, French, and Korean interfaces.
 
 ## Installation
@@ -28,10 +29,11 @@ Search for and install `Nintendo Pro Bridge`.
 
 Connect the controller and start the game. Use `/npro` to open or close the settings window.
 
+Rumble is enabled by default. It can be disabled or tested from the settings window. In-game rumble strength is controlled by FFXIV's gamepad settings.
+
 If the plugin cannot read the controller, disable Steam Input for FFXIV and reconnect it.
 
 ## Limitations
 
 - Official Nintendo Switch Pro Controllers only.
 - Gyroscope, accelerometer, and NFC data are ignored.
-- Rumble is not currently supported.

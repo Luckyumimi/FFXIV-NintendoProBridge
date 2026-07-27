@@ -10,9 +10,12 @@ internal sealed class ProControllerInput : IDisposable
     private const int StickRange = 1000;
     private static readonly long InitialRepeatTicks = Stopwatch.Frequency / 2;
     private static readonly long RepeatTicks = Stopwatch.Frequency / 15;
+    private static readonly long RumbleMinimumWriteTicks = Stopwatch.Frequency * 30 / 1000;
+    private static readonly long RumbleRefreshTicks = Stopwatch.Frequency * 50 / 1000;
 
     private readonly PluginSettings settings;
     private readonly Hook<PadDevice.Delegates.Poll> pollHook;
+    private readonly Hook<PadDevice.Delegates.SetVibration> vibrationHook;
     private readonly CancellationTokenSource cancellation = new();
     private readonly Task readerTask;
     private readonly object streamLock = new();
@@ -21,6 +24,10 @@ internal sealed class ProControllerInput : IDisposable
     private ControllerSnapshot snapshot = ControllerSnapshot.Disconnected;
     private string? lastError;
     private GamepadButtonsFlags previousButtons;
+    private int desiredLeftMotor;
+    private int desiredRightMotor;
+    private long testRumbleUntil;
+    private int packetNumber;
     private bool disposed;
 
     public bool IsConnected => Volatile.Read(ref snapshot).Connected;
@@ -31,7 +38,10 @@ internal sealed class ProControllerInput : IDisposable
         this.settings = settings;
         pollHook = interop.HookFromAddress((nint)PadDevice.StaticVirtualTablePointer->Poll,
             (PadDevice.Delegates.Poll)PollDetour);
+        vibrationHook = interop.HookFromAddress((nint)PadDevice.StaticVirtualTablePointer->SetVibration,
+            (PadDevice.Delegates.SetVibration)VibrationDetour);
         pollHook.Enable();
+        vibrationHook.Enable();
         readerTask = Task.Run(() => ReadLoopAsync(cancellation.Token));
     }
 
@@ -55,6 +65,37 @@ internal sealed class ProControllerInput : IDisposable
             // Input hooks must never take the game down. Fall back to the game's original poll.
         }
         return pollHook.Original(device);
+    }
+
+    private unsafe void VibrationDetour(PadDevice* device, int rightMotorSpeed, int leftMotorSpeed)
+    {
+        try
+        {
+            if (settings.Enabled && Volatile.Read(ref snapshot).Connected)
+            {
+                if (settings.EnableRumble)
+                {
+                    Volatile.Write(ref desiredRightMotor, ScaleMotorSpeed(rightMotorSpeed));
+                    Volatile.Write(ref desiredLeftMotor, ScaleMotorSpeed(leftMotorSpeed));
+                }
+                else
+                {
+                    StopRumble();
+                }
+                return;
+            }
+        }
+        catch
+        {
+            // Vibration must never make the game unstable. Fall back to the native handler.
+        }
+        vibrationHook.Original(device, rightMotorSpeed, leftMotorSpeed);
+    }
+
+    public void TestRumble()
+    {
+        if (!settings.Enabled || !settings.EnableRumble || !IsConnected) return;
+        Volatile.Write(ref testRumbleUntil, Stopwatch.GetTimestamp() + Stopwatch.Frequency / 2);
     }
 
     private void WriteGameState(ref GamepadInputData input, ControllerSnapshot state)
@@ -139,19 +180,34 @@ internal sealed class ProControllerInput : IDisposable
                 {
                     lock (streamLock) currentStream = device.Stream;
                     Volatile.Write(ref lastError, null);
+                    Interlocked.Exchange(ref packetNumber, 0);
+                    StopRumble();
                     if (device.IsUsb) await TryInitializeUsbAsync(device.Stream, token);
+                    await TryEnableVibrationAsync(device.Stream, token);
+                    await Task.Delay(10, token);
                     await TryEnableFullInputReportsAsync(device.Stream, token);
+                    using var connectionCancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
+                    var rumbleTask = RunRumbleLoopAsync(device.Stream, connectionCancellation.Token);
                     var report = new byte[64];
-                    while (!token.IsCancellationRequested)
+                    try
                     {
-                        try
+                        while (!token.IsCancellationRequested)
                         {
-                            var count = await device.Stream.ReadAsync(report, token);
-                            if (count == 0) break;
-                            if (count > 0 && TryDecode(report.AsSpan(0, count), out var decoded))
-                                Volatile.Write(ref snapshot, decoded);
+                            try
+                            {
+                                var count = await device.Stream.ReadAsync(report, token);
+                                if (count == 0) break;
+                                if (count > 0 && TryDecode(report.AsSpan(0, count), out var decoded))
+                                    Volatile.Write(ref snapshot, decoded);
+                            }
+                            catch (IOException) { break; }
                         }
-                        catch (IOException) { break; }
+                    }
+                    finally
+                    {
+                        connectionCancellation.Cancel();
+                        try { await rumbleTask; }
+                        catch (OperationCanceledException) { }
                     }
                 }
             }
@@ -183,7 +239,18 @@ internal sealed class ProControllerInput : IDisposable
         Volatile.Write(ref lastError, error);
         previousButtons = 0;
         Array.Clear(nextRepeat);
+        StopRumble();
     }
+
+    private void StopRumble()
+    {
+        Volatile.Write(ref desiredLeftMotor, 0);
+        Volatile.Write(ref desiredRightMotor, 0);
+        Volatile.Write(ref testRumbleUntil, 0);
+    }
+
+    private static int ScaleMotorSpeed(int percent) =>
+        (Math.Clamp(percent, 0, 100) * ushort.MaxValue + 50) / 100;
 
     private bool TryDecode(ReadOnlySpan<byte> report, out ControllerSnapshot state)
     {
@@ -272,32 +339,105 @@ internal sealed class ProControllerInput : IDisposable
         catch (IOException) { }
     }
 
-    private static async Task TryEnableFullInputReportsAsync(FileStream stream, CancellationToken token)
+    private async Task TryEnableFullInputReportsAsync(FileStream stream, CancellationToken token)
     {
         try
         {
-            var command = new byte[64];
-            command[0] = 0x01;
-            command[2] = 0x00; command[3] = 0x01; command[4] = 0x40; command[5] = 0x40;
-            command[6] = 0x00; command[7] = 0x01; command[8] = 0x40; command[9] = 0x40;
-            command[10] = 0x03; command[11] = 0x30;
-            await stream.WriteAsync(command, token);
+            await stream.WriteAsync(CreateSubcommand(0x03, 0x30), token);
         }
         catch (IOException) { }
     }
+
+    private async Task TryEnableVibrationAsync(FileStream stream, CancellationToken token)
+    {
+        try { await stream.WriteAsync(CreateSubcommand(0x48, 0x01), token); }
+        catch (IOException) { }
+    }
+
+    private byte[] CreateSubcommand(byte subcommand, byte argument)
+    {
+        var command = new byte[64];
+        command[0] = 0x01;
+        command[1] = NextPacketNumber();
+        SwitchRumble.SetNeutral(command.AsSpan(2, 4));
+        SwitchRumble.SetNeutral(command.AsSpan(6, 4));
+        command[10] = subcommand;
+        command[11] = argument;
+        return command;
+    }
+
+    private async Task RunRumbleLoopAsync(FileStream stream, CancellationToken token)
+    {
+        var lastLeft = -1;
+        var lastRight = -1;
+        var lastWrite = 0L;
+        try
+        {
+            while (!token.IsCancellationRequested)
+            {
+                var now = Stopwatch.GetTimestamp();
+                var testing = now < Volatile.Read(ref testRumbleUntil);
+                var enabled = settings.Enabled && settings.EnableRumble;
+                var left = enabled ? (testing ? 32768 : Volatile.Read(ref desiredLeftMotor)) : 0;
+                var right = enabled ? (testing ? 32768 : Volatile.Read(ref desiredRightMotor)) : 0;
+                var active = left != 0 || right != 0;
+                var changed = left != lastLeft || right != lastRight;
+                var elapsed = now - lastWrite;
+                var stopImmediately = !active && (lastLeft > 0 || lastRight > 0);
+                if ((changed && (lastWrite == 0 || elapsed >= RumbleMinimumWriteTicks)) ||
+                    stopImmediately || (active && elapsed >= RumbleRefreshTicks))
+                {
+                    await WriteRumbleAsync(stream, left, right, token);
+                    lastLeft = left;
+                    lastRight = right;
+                    lastWrite = Stopwatch.GetTimestamp();
+                }
+                await Task.Delay(10, token);
+            }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (IOException) { }
+        catch (ObjectDisposedException) { }
+        finally
+        {
+            try
+            {
+                using var stopTimeout = new CancellationTokenSource(100);
+                await WriteRumbleAsync(stream, 0, 0, stopTimeout.Token);
+            }
+            catch (Exception ex) when (ex is IOException or OperationCanceledException or ObjectDisposedException) { }
+        }
+    }
+
+    private async Task WriteRumbleAsync(FileStream stream, int leftMotor, int rightMotor, CancellationToken token)
+    {
+        var report = new byte[64];
+        report[0] = 0x10;
+        report[1] = NextPacketNumber();
+        SwitchRumble.Encode(report.AsSpan(2, 4), (ushort)leftMotor, (ushort)rightMotor);
+        report.AsSpan(2, 4).CopyTo(report.AsSpan(6, 4));
+        await stream.WriteAsync(report, token);
+    }
+
+    private byte NextPacketNumber() => (byte)((Interlocked.Increment(ref packetNumber) - 1) & 0x0F);
 
     public void Dispose()
     {
         if (disposed) return;
         disposed = true;
+        vibrationHook.Disable();
         pollHook.Disable();
+        StopRumble();
         cancellation.Cancel();
-        lock (streamLock)
-        {
-            currentStream?.Close();
-        }
         try { readerTask.Wait(1500); }
         catch (AggregateException) { }
+        if (!readerTask.IsCompleted)
+        {
+            lock (streamLock) currentStream?.Close();
+            try { readerTask.Wait(500); }
+            catch (AggregateException) { }
+        }
+        vibrationHook.Dispose();
         pollHook.Dispose();
         cancellation.Dispose();
     }

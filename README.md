@@ -12,6 +12,7 @@
 - 支持摇杆、十字键、面键、肩键、扳机、加减键及摇杆按下。
 - 支持交换 A/B、X/Y。
 - 左右摇杆死区可独立调整。
+- 支持游戏震动，并可在设置窗口中测试。
 - 支持简体中文、繁体中文、日语、英语、德语、法语和韩语。
 
 ## 安装
@@ -28,10 +29,11 @@ https://raw.githubusercontent.com/Luckyumimi/MyDalamudPlugins/master/pluginmaste
 
 连接手柄后进入游戏。使用 `/npro` 打开或关闭设置窗口。
 
+震动默认启用，可在设置窗口中关闭或使用“测试”按钮验证。游戏内震动强度由 FFXIV 的手柄设置控制。
+
 如果插件无法读取手柄，请关闭 FFXIV 的 Steam Input，然后重新连接手柄。
 
 ## 限制
 
 - 仅支持官方 Nintendo Switch Pro 手柄。
 - 不处理陀螺仪、加速度计和 NFC 数据。
-- 暂不支持震动。
