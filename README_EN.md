@@ -9,6 +9,7 @@ The plugin reads the controller directly and operates only inside the FFXIV proc
 ## Features
 
 - USB and Bluetooth support.
+- Automatic or manual selection of the Pro Controller to use.
 - Sticks, D-pad, face buttons, shoulder buttons, triggers, Plus/Minus, and stick clicks.
 - Optional A/B and X/Y swaps.
 - Independent deadzone settings for both sticks.

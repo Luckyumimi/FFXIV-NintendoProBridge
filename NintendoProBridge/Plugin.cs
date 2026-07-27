@@ -119,6 +119,32 @@ internal sealed class SettingsWindow : Window
         if (!string.IsNullOrWhiteSpace(controller.LastError))
             ImGui.TextColored(new Vector4(1f, .55f, .3f, 1f), T("readError"));
 
+        var devices = controller.AvailableDevices;
+        var selectedDevice = devices.FirstOrDefault(device =>
+            string.Equals(device.Path, settings.SelectedDevicePath, StringComparison.OrdinalIgnoreCase));
+        var devicePreview = string.IsNullOrWhiteSpace(settings.SelectedDevicePath)
+            ? T("automaticDevice")
+            : selectedDevice?.DisplayName ?? T("selectedDeviceMissing");
+        ImGui.Text(T("controllerDevice"));
+        ImGui.SetNextItemWidth(-1);
+        if (ImGui.BeginCombo("##controllerDevice", devicePreview))
+        {
+            var automatic = string.IsNullOrWhiteSpace(settings.SelectedDevicePath);
+            if (ImGui.Selectable(T("automaticDevice"), automatic)) controller.SelectDevice(null);
+            if (automatic) ImGui.SetItemDefaultFocus();
+            for (var index = 0; index < devices.Count; index++)
+            {
+                var device = devices[index];
+                var selected = string.Equals(device.Path, settings.SelectedDevicePath,
+                    StringComparison.OrdinalIgnoreCase);
+                if (ImGui.Selectable($"{device.DisplayName}##device{index}", selected))
+                    controller.SelectDevice(device.Path);
+                if (selected) ImGui.SetItemDefaultFocus();
+            }
+            ImGui.EndCombo();
+        }
+        if (ImGui.Button(T("refreshDevices"))) controller.RefreshDevices();
+
         ImGui.Separator();
         var changed = false;
         var enabled = settings.Enabled;
@@ -233,6 +259,10 @@ internal static class LocalizedText
         ["activeDetail"] = ["FFXIV 手柄输入已启用。", "FFXIV gamepad input is active.", "FFXIV-Gamepad-Eingabe ist aktiv.", "L’entrée manette de FFXIV est active.", "FFXIV 控制器輸入已啟用。", "FFXIV 게임패드 입력이 활성화되었습니다.", "FFXIVのゲームパッド入力が有効です。"],
         ["connectDetail"] = ["连接手柄并按任意键。若 Steam 独占了设备，请关闭该游戏的 Steam Input 后重连。", "Connect the controller and press any button. If Steam has exclusive access, disable Steam Input for this game and reconnect.", "Controller verbinden und eine Taste drücken. Falls Steam exklusiv zugreift, Steam Input für dieses Spiel deaktivieren und neu verbinden.", "Connectez la manette et appuyez sur un bouton. Si Steam y accède exclusivement, désactivez Steam Input pour ce jeu puis reconnectez-la.", "連接控制器並按任意鍵。若 Steam 獨佔裝置，請關閉此遊戲的 Steam Input 後重新連線。", "컨트롤러를 연결하고 아무 버튼이나 누르세요. Steam이 장치를 독점하면 이 게임의 Steam Input을 끄고 다시 연결하세요.", "コントローラーを接続してボタンを押してください。Steamが占有している場合は、このゲームのSteam Inputを無効にして再接続してください。"],
         ["readError"] = ["手柄存在但暂时无法读取，可能正被 Steam 或其他手柄工具独占。", "The controller exists but cannot currently be read; Steam or another controller tool may have exclusive access.", "Der Controller ist vorhanden, kann aber nicht gelesen werden; Steam oder ein anderes Tool könnte exklusiv zugreifen.", "La manette est présente mais illisible ; Steam ou un autre outil peut disposer d'un accès exclusif.", "控制器存在但暫時無法讀取，可能正被 Steam 或其他工具獨佔。", "컨트롤러가 있지만 읽을 수 없습니다. Steam 또는 다른 도구가 독점 중일 수 있습니다.", "コントローラーは存在しますが読み取れません。Steamなどが占有している可能性があります。"],
+        ["controllerDevice"] = ["手柄设备", "Controller device", "Controller-Gerät", "Périphérique de manette", "控制器裝置", "컨트롤러 장치", "コントローラー機器"],
+        ["automaticDevice"] = ["自动选择", "Select automatically", "Automatisch auswählen", "Sélection automatique", "自動選擇", "자동 선택", "自動選択"],
+        ["selectedDeviceMissing"] = ["已选设备未连接", "Selected device is not connected", "Ausgewähltes Gerät ist nicht verbunden", "Le périphérique sélectionné n’est pas connecté", "已選裝置未連接", "선택한 장치가 연결되지 않았습니다", "選択した機器が接続されていません"],
+        ["refreshDevices"] = ["刷新设备", "Refresh devices", "Geräte aktualisieren", "Actualiser les périphériques", "重新整理裝置", "장치 새로고침", "機器を更新"],
         ["language"] = ["界面语言", "Interface language", "Oberflächensprache", "Langue de l’interface", "介面語言", "인터페이스 언어", "表示言語"],
         ["autoLanguage"] = ["跟随游戏", "Follow game language", "Spielsprache verwenden", "Suivre la langue du jeu", "跟隨遊戲", "게임 언어 따르기", "ゲーム言語に合わせる"],
         ["enabled"] = ["启用手柄适配", "Enable controller support", "Controller-Unterstützung aktivieren", "Activer la prise en charge de la manette", "啟用控制器適配", "컨트롤러 지원 활성화", "コントローラー対応を有効にする"],
@@ -279,6 +309,7 @@ public sealed class PluginSettings
     public bool SwapXy { get; set; }
     public float LeftDeadzone { get; set; } = .35f;
     public float RightDeadzone { get; set; } = .35f;
+    public string? SelectedDevicePath { get; set; }
     public StickCalibration LeftStickCalibration { get; set; } = new();
     public StickCalibration RightStickCalibration { get; set; } = new();
     public static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };

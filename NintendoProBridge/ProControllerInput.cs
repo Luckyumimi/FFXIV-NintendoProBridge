@@ -23,6 +23,7 @@ internal sealed class ProControllerInput : IDisposable
     private readonly object calibrationLock = new();
     private readonly long[] nextRepeat = new long[16];
     private FileStream? currentStream;
+    private NativeHidDeviceInfo[] availableDevices = [];
     private ControllerSnapshot snapshot = ControllerSnapshot.Disconnected;
     private string? lastError;
     private GamepadButtonsFlags previousButtons;
@@ -44,6 +45,7 @@ internal sealed class ProControllerInput : IDisposable
 
     public bool IsConnected => Volatile.Read(ref snapshot).Connected;
     public string? LastError => Volatile.Read(ref lastError);
+    public IReadOnlyList<NativeHidDeviceInfo> AvailableDevices => Volatile.Read(ref availableDevices);
     public CalibrationMode CurrentCalibrationMode
     {
         get { lock (calibrationLock) return calibrationMode; }
@@ -139,6 +141,19 @@ internal sealed class ProControllerInput : IDisposable
     {
         if (!settings.Enabled || !settings.EnableRumble || !IsConnected) return;
         Volatile.Write(ref testRumbleUntil, Stopwatch.GetTimestamp() + Stopwatch.Frequency / 2);
+    }
+
+    public void RefreshDevices()
+    {
+        Volatile.Write(ref availableDevices, NativeHid.ListNintendoProDevices());
+    }
+
+    public void SelectDevice(string? path)
+    {
+        if (string.Equals(settings.SelectedDevicePath, path, StringComparison.OrdinalIgnoreCase)) return;
+        settings.SelectedDevicePath = string.IsNullOrWhiteSpace(path) ? null : path;
+        saveSettings();
+        lock (streamLock) currentStream?.Close();
     }
 
     public void StartCenterCalibration()
@@ -277,7 +292,8 @@ internal sealed class ProControllerInput : IDisposable
         {
             try
             {
-                var device = NativeHid.TryOpenNintendoPro();
+                var device = NativeHid.TryOpenNintendoPro(settings.SelectedDevicePath, out var discoveredDevices);
+                Volatile.Write(ref availableDevices, discoveredDevices);
                 if (device is null)
                 {
                     SetDisconnected(null);
@@ -312,7 +328,7 @@ internal sealed class ProControllerInput : IDisposable
                                 if (count > 0 && TryDecode(report.AsSpan(0, count), out var decoded))
                                     Volatile.Write(ref snapshot, decoded);
                             }
-                            catch (IOException) { break; }
+                            catch (Exception ex) when (ex is IOException or ObjectDisposedException) { break; }
                         }
                     }
                     finally
@@ -324,7 +340,7 @@ internal sealed class ProControllerInput : IDisposable
                 }
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { break; }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ObjectDisposedException)
             {
                 SetDisconnected(ex.GetType().Name);
             }
