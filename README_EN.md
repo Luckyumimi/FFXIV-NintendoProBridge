@@ -1,30 +1,37 @@
 # Nintendo Pro Bridge
 
-[中文说明](README.md)
+[中文](README.md)
 
-A Dalamud plugin that reads an official Nintendo Switch Pro Controller over HID and replaces FFXIV's gamepad state after the game's own controller poll.
+A Dalamud plugin that lets FFXIV recognize and use an official Nintendo Switch Pro Controller.
 
-Translation is scoped to the FFXIV process. It creates no virtual Xbox device, does not use HidHide, installs no driver, requires no elevation, and does not change how Windows sees the physical controller.
+The plugin reads the controller directly and operates only inside the FFXIV process. No driver, virtual controller, or administrator access is required.
 
 ## Features
 
-- USB and Bluetooth support for official Nintendo Switch Pro Controllers.
-- Sticks, D-pad, face and shoulder buttons, triggers, Plus/Minus, and stick clicks.
-- Optional A/B and X/Y swaps plus independent stick deadzones.
-- Replaces duplicate native Pro Controller and Steam Input state inside FFXIV.
-- Ignores gyroscope, accelerometer, and NFC data.
-- `/npro` opens settings localized in Simplified/Traditional Chinese, Japanese, English, German, French, and Korean.
+- USB and Bluetooth support.
+- Sticks, D-pad, face buttons, shoulder buttons, triggers, Plus/Minus, and stick clicks.
+- Optional A/B and X/Y swaps.
+- Independent deadzone settings for both sticks.
+- Simplified Chinese, Traditional Chinese, Japanese, English, German, French, and Korean interfaces.
 
-## Local loading
+## Installation
 
-Select the following file in Dalamud's developer plugin settings:
+Add this URL to Dalamud's custom plugin repositories:
 
-`NintendoProBridge/bin/Release/net10.0-windows/NintendoProBridge.dll`
+```text
+https://raw.githubusercontent.com/Luckyumimi/MyDalamudPlugins/master/pluginmaster.json
+```
 
-Keep the `.deps.json` beside the plugin DLL. The settings window opens on first load; no driver setup is required. The plugin uses native Windows HID/SetupAPI and ships no third-party HID manager.
+Search for and install `Nintendo Pro Bridge`.
 
-## Steam
+## Usage
 
-The plugin replaces native or Steam Input state inside FFXIV, preventing two gamepad states from being combined. Steam Desktop Layout runs outside the game process and cannot be changed by this plugin. If Steam holds the controller exclusively, disable Steam Input for FFXIV or close Steam and reconnect the controller.
+Connect the controller and start the game. Use `/npro` to open or close the settings window.
 
-Rumble forwarding is currently unavailable in the in-process mode because FFXIV has no virtual Xbox output device to target.
+If the plugin cannot read the controller, disable Steam Input for FFXIV and reconnect it.
+
+## Limitations
+
+- Official Nintendo Switch Pro Controllers only.
+- Gyroscope, accelerometer, and NFC data are ignored.
+- Rumble is not currently supported.
