@@ -14,7 +14,6 @@ internal static class NativeHid
     private const uint OpenExisting = 3;
     private const uint FileFlagOverlapped = 0x40000000;
     private const ushort NintendoVendorId = 0x057E;
-    private const ushort SwitchProProductId = 0x2009;
 
     public static NativeHidDeviceInfo[] ListNintendoProDevices()
     {
@@ -47,7 +46,7 @@ internal static class NativeHid
                     if (handle.IsInvalid) continue;
                     var attributes = new HiddAttributes { Size = Marshal.SizeOf<HiddAttributes>() };
                     if (!HidD_GetAttributes(handle, ref attributes) ||
-                        attributes.VendorId != NintendoVendorId || attributes.ProductId != SwitchProProductId)
+                        attributes.VendorId != NintendoVendorId)
                         continue;
 
                     var serial = ReadString(handle, HidD_GetSerialNumberString);
