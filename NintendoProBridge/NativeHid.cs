@@ -14,6 +14,7 @@ internal static class NativeHid
     private const uint OpenExisting = 3;
     private const uint FileFlagOverlapped = 0x40000000;
     private const ushort NintendoVendorId = 0x057E;
+    private const ushort Switch2ProProductId = 0x2069;
 
     public static NativeHidDeviceInfo[] ListNintendoProDevices()
     {
@@ -49,11 +50,23 @@ internal static class NativeHid
                         attributes.VendorId != NintendoVendorId)
                         continue;
 
+                    var kind = attributes.ProductId == Switch2ProProductId
+                        ? ControllerKind.Switch2Pro
+                        : ControllerKind.SwitchPro;
+                    if (kind == ControllerKind.Switch2Pro &&
+                        !path.Contains("mi_00", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
                     var serial = ReadString(handle, HidD_GetSerialNumberString);
                     var product = ReadString(handle, HidD_GetProductString);
+                    var fallbackName = kind == ControllerKind.Switch2Pro
+                        ? "Nintendo Switch 2 Pro Controller"
+                        : "Nintendo Switch Pro Controller";
                     devices.Add(new NativeHidDeviceInfo(path,
-                        string.IsNullOrWhiteSpace(product) ? "Nintendo Switch Pro Controller" : product,
-                        string.Equals(serial, "000000000001", StringComparison.Ordinal), serial));
+                        string.IsNullOrWhiteSpace(product) ? fallbackName : product,
+                        kind == ControllerKind.Switch2Pro ||
+                        string.Equals(serial, "000000000001", StringComparison.Ordinal), serial,
+                        attributes.ProductId, kind));
                 }
                 finally { Marshal.FreeHGlobal(detail); }
             }
@@ -66,12 +79,34 @@ internal static class NativeHid
         out NativeHidDeviceInfo[] availableDevices)
     {
         availableDevices = ListNintendoProDevices();
-        var candidates = string.IsNullOrWhiteSpace(selectedPath)
-            ? availableDevices
-            : availableDevices.Where(device =>
+        NativeHidDeviceInfo[] candidates;
+        if (string.IsNullOrWhiteSpace(selectedPath))
+        {
+            candidates = availableDevices;
+        }
+        else
+        {
+            var exact = availableDevices.FirstOrDefault(device =>
                 string.Equals(device.Path, selectedPath, StringComparison.OrdinalIgnoreCase));
+            if (exact is not null)
+            {
+                candidates = [exact];
+            }
+            else
+            {
+                // USB and Bluetooth expose different HID paths for the same controller. Only migrate an
+                // unavailable saved path when exactly one device with the same PID is present, so an
+                // explicit selection never silently jumps to another controller in a multi-device setup.
+                var sameProduct = availableDevices.Where(device =>
+                    PathContainsProductId(selectedPath, device.ProductId)).ToArray();
+                candidates = sameProduct.Length == 1 ? sameProduct : [];
+            }
+        }
         foreach (var device in candidates)
         {
+            if (device.Kind == ControllerKind.Switch2Pro)
+                Switch2WinUsb.Initialize();
+
             var handle = CreateFileW(device.Path, GenericRead | GenericWrite, FileShareRead | FileShareWrite,
                 0, OpenExisting, FileFlagOverlapped, 0);
             if (handle.IsInvalid)
@@ -83,9 +118,17 @@ internal static class NativeHid
             var (inputReportLength, outputReportLength) = ReadReportLengths(handle);
             var bufferSize = Math.Max(inputReportLength, outputReportLength);
             var stream = new FileStream(handle, FileAccess.ReadWrite, bufferSize, isAsync: true);
-            return new NativeHidDevice(stream, device.IsUsb, inputReportLength, outputReportLength, device.Path);
+            return new NativeHidDevice(stream, device.IsUsb, inputReportLength, outputReportLength, device.Path,
+                device.Kind);
         }
         return null;
+    }
+
+    private static bool PathContainsProductId(string path, ushort productId)
+    {
+        var id = productId.ToString("x4");
+        return path.Contains($"pid_{id}", StringComparison.OrdinalIgnoreCase) ||
+               path.Contains($"pid&{id}", StringComparison.OrdinalIgnoreCase);
     }
 
     private delegate bool ReadHidString(SafeFileHandle device, nint buffer, uint bufferLength);
@@ -201,7 +244,8 @@ internal static class NativeHid
         nint securityAttributes, uint creationDisposition, uint flagsAndAttributes, nint templateFile);
 }
 
-internal sealed record NativeHidDeviceInfo(string Path, string ProductName, bool IsUsb, string? Serial)
+internal sealed record NativeHidDeviceInfo(string Path, string ProductName, bool IsUsb, string? Serial,
+    ushort ProductId, ControllerKind Kind)
 {
     public string DisplayName
     {
@@ -217,4 +261,6 @@ internal sealed record NativeHidDeviceInfo(string Path, string ProductName, bool
 }
 
 internal sealed record NativeHidDevice(FileStream Stream, bool IsUsb, int InputReportLength,
-    int OutputReportLength, string Path);
+    int OutputReportLength, string Path, ControllerKind Kind);
+
+internal enum ControllerKind { None, SwitchPro, Switch2Pro }

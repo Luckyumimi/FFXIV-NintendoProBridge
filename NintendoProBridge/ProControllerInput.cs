@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using Dalamud.Hooking;
 using Dalamud.Plugin.Services;
@@ -8,6 +9,7 @@ namespace NintendoProBridge;
 internal sealed class ProControllerInput : IDisposable
 {
     private const int StickRange = 99;
+    private const int Switch2MaximumRumbleAmplitude = 29000;
     private static readonly long InitialRepeatTicks = Stopwatch.Frequency / 2;
     private static readonly long RepeatTicks = Stopwatch.Frequency / 15;
     private static readonly long RumbleMinimumWriteTicks = Stopwatch.Frequency * 30 / 1000;
@@ -25,12 +27,14 @@ internal sealed class ProControllerInput : IDisposable
     private FileStream? currentStream;
     private NativeHidDeviceInfo[] availableDevices = [];
     private ControllerSnapshot snapshot = ControllerSnapshot.Disconnected;
+    private volatile ControllerKind activeControllerKind;
     private string? lastError;
     private GamepadButtonsFlags previousButtons;
     private int desiredLeftMotor;
     private int desiredRightMotor;
     private long testRumbleUntil;
     private int packetNumber;
+    private int rumbleSequence;
     private CalibrationMode calibrationMode;
     private CalibrationResult calibrationResult;
     private long centerCalibrationEnd;
@@ -44,6 +48,7 @@ internal sealed class ProControllerInput : IDisposable
     private bool disposed;
 
     public bool IsConnected => Volatile.Read(ref snapshot).Connected;
+    public ControllerKind ActiveControllerKind => activeControllerKind;
     public string? LastError => Volatile.Read(ref lastError);
     public IReadOnlyList<NativeHidDeviceInfo> AvailableDevices => Volatile.Read(ref availableDevices);
     public CalibrationMode CurrentCalibrationMode
@@ -292,7 +297,8 @@ internal sealed class ProControllerInput : IDisposable
         {
             try
             {
-                var device = NativeHid.TryOpenNintendoPro(settings.SelectedDevicePath, out var discoveredDevices);
+                var requestedPath = settings.SelectedDevicePath;
+                var device = NativeHid.TryOpenNintendoPro(requestedPath, out var discoveredDevices);
                 Volatile.Write(ref availableDevices, discoveredDevices);
                 if (device is null)
                 {
@@ -301,21 +307,37 @@ internal sealed class ProControllerInput : IDisposable
                     continue;
                 }
 
+                if (!string.IsNullOrWhiteSpace(requestedPath) &&
+                    string.Equals(settings.SelectedDevicePath, requestedPath, StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(requestedPath, device.Path, StringComparison.OrdinalIgnoreCase))
+                {
+                    settings.SelectedDevicePath = device.Path;
+                    saveSettings();
+                }
+
                 await using (device.Stream)
                 {
+                    activeControllerKind = device.Kind;
                     lock (streamLock) currentStream = device.Stream;
                     Volatile.Write(ref lastError, null);
                     Interlocked.Exchange(ref packetNumber, 0);
+                    Interlocked.Exchange(ref rumbleSequence, 0);
                     StopRumble();
-                    if (device.IsUsb)
+                    if (device.Kind == ControllerKind.SwitchPro && device.IsUsb)
                         await TryInitializeUsbAsync(device.Stream, device.InputReportLength,
                             device.OutputReportLength, token);
-                    await TryEnableVibrationAsync(device.Stream, device.OutputReportLength, token);
-                    await Task.Delay(10, token);
-                    await TryEnableFullInputReportsAsync(device.Stream, device.OutputReportLength, token);
+                    if (device.Kind == ControllerKind.SwitchPro)
+                    {
+                        await TryEnableVibrationAsync(device.Stream, device.OutputReportLength, token);
+                        await Task.Delay(10, token);
+                        await TryEnableFullInputReportsAsync(device.Stream, device.OutputReportLength, token);
+                    }
                     using var connectionCancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
-                    var rumbleTask = RunRumbleLoopAsync(device.Stream, device.OutputReportLength,
-                        connectionCancellation.Token);
+                    var rumbleTask = device.Kind == ControllerKind.Switch2Pro
+                        ? RunSwitch2RumbleLoopAsync(device.Stream, device.OutputReportLength,
+                            connectionCancellation.Token)
+                        : RunRumbleLoopAsync(device.Stream, device.OutputReportLength,
+                            connectionCancellation.Token);
                     var report = new byte[device.InputReportLength];
                     try
                     {
@@ -323,11 +345,17 @@ internal sealed class ProControllerInput : IDisposable
                         {
                             try
                             {
-                                var count = await device.Stream.ReadAsync(report, token);
+                                using var readTimeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+                                readTimeout.CancelAfter(TimeSpan.FromSeconds(2));
+                                var count = await device.Stream.ReadAsync(report, readTimeout.Token);
                                 if (count == 0) break;
-                                if (count > 0 && TryDecode(report.AsSpan(0, count), out var decoded))
+                                var decodedSuccessfully = device.Kind == ControllerKind.Switch2Pro
+                                    ? TryDecodeSwitch2(report.AsSpan(0, count), out var decoded)
+                                    : TryDecode(report.AsSpan(0, count), out decoded);
+                                if (count > 0 && decodedSuccessfully)
                                     Volatile.Write(ref snapshot, decoded);
                             }
+                            catch (OperationCanceledException) when (!token.IsCancellationRequested) { break; }
                             catch (Exception ex) when (ex is IOException or ObjectDisposedException) { break; }
                         }
                     }
@@ -340,15 +368,18 @@ internal sealed class ProControllerInput : IDisposable
                 }
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { break; }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ObjectDisposedException)
+            catch (OperationCanceledException)
+            {
+                SetDisconnected(null);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
+                ObjectDisposedException or Win32Exception)
             {
                 SetDisconnected(ex.GetType().Name);
             }
             finally
             {
                 lock (streamLock) currentStream = null;
-                if (!token.IsCancellationRequested && !Volatile.Read(ref snapshot).Connected)
-                    Volatile.Write(ref lastError, "read-failed");
             }
 
             if (!token.IsCancellationRequested)
@@ -363,6 +394,7 @@ internal sealed class ProControllerInput : IDisposable
 
     private void SetDisconnected(string? error)
     {
+        activeControllerKind = ControllerKind.None;
         Volatile.Write(ref snapshot, ControllerSnapshot.Disconnected);
         Volatile.Write(ref lastError, error);
         previousButtons = 0;
@@ -421,6 +453,33 @@ internal sealed class ProControllerInput : IDisposable
         }
     }
 
+    private bool TryDecodeSwitch2(ReadOnlySpan<byte> report, out ControllerSnapshot state)
+    {
+        state = ControllerSnapshot.Disconnected;
+        if (report.Length < 17 || report[0] != 0x05) return false;
+
+        var right = report[5];
+        var shared = report[6];
+        var left = report[7];
+        var extra = report[8];
+        var raw = new RawStickState(
+            report[11] | ((report[12] & 0x0F) << 8),
+            (report[12] >> 4) | (report[13] << 4),
+            report[14] | ((report[15] & 0x0F) << 8),
+            (report[15] >> 4) | (report[16] << 4));
+        UpdateCalibration(raw);
+        var leftStick = NormalizeStick(raw.LeftX, raw.LeftY, settings.LeftStickCalibration);
+        var rightStick = NormalizeStick(raw.RightX, raw.RightY, settings.RightStickCalibration);
+        var baseState = CreateState(leftStick.X, leftStick.Y, rightStick.X, rightStick.Y,
+            right, shared, left);
+        var buttons = baseState.Buttons;
+        Add(ref buttons, (shared & 0x40) != 0, ResolveExtraButton(settings.CButtonMapping));
+        Add(ref buttons, (extra & 0x02) != 0, ResolveExtraButton(settings.GlButtonMapping));
+        Add(ref buttons, (extra & 0x01) != 0, ResolveExtraButton(settings.GrButtonMapping));
+        state = baseState with { Buttons = buttons };
+        return true;
+    }
+
     private ControllerSnapshot CreateState(float lx, float ly, float rx, float ry, byte right, byte shared, byte left)
     {
         var buttons = GamepadButtonsFlags.None;
@@ -449,6 +508,27 @@ internal sealed class ProControllerInput : IDisposable
     {
         if (pressed) buttons |= button;
     }
+
+    private GamepadButtonsFlags ResolveExtraButton(ExtraButtonMapping mapping) => mapping switch
+    {
+        ExtraButtonMapping.A => settings.SwapAb ? GamepadButtonsFlags.Circle : GamepadButtonsFlags.Cross,
+        ExtraButtonMapping.B => settings.SwapAb ? GamepadButtonsFlags.Cross : GamepadButtonsFlags.Circle,
+        ExtraButtonMapping.X => settings.SwapXy ? GamepadButtonsFlags.Triangle : GamepadButtonsFlags.Square,
+        ExtraButtonMapping.Y => settings.SwapXy ? GamepadButtonsFlags.Square : GamepadButtonsFlags.Triangle,
+        ExtraButtonMapping.L => GamepadButtonsFlags.L1,
+        ExtraButtonMapping.R => GamepadButtonsFlags.R1,
+        ExtraButtonMapping.ZL => GamepadButtonsFlags.L2,
+        ExtraButtonMapping.ZR => GamepadButtonsFlags.R2,
+        ExtraButtonMapping.Plus => GamepadButtonsFlags.Start,
+        ExtraButtonMapping.Minus => GamepadButtonsFlags.Select,
+        ExtraButtonMapping.LeftStick => GamepadButtonsFlags.L3,
+        ExtraButtonMapping.RightStick => GamepadButtonsFlags.R3,
+        ExtraButtonMapping.DPadUp => GamepadButtonsFlags.DPadUp,
+        ExtraButtonMapping.DPadDown => GamepadButtonsFlags.DPadDown,
+        ExtraButtonMapping.DPadLeft => GamepadButtonsFlags.DPadLeft,
+        ExtraButtonMapping.DPadRight => GamepadButtonsFlags.DPadRight,
+        _ => GamepadButtonsFlags.None,
+    };
 
     private static (float X, float Y) NormalizeStick(int x, int y, StickCalibration calibration)
     {
@@ -631,6 +711,66 @@ internal sealed class ProControllerInput : IDisposable
         report[1] = NextPacketNumber();
         SwitchRumble.Encode(report.AsSpan(2, 4), (ushort)leftMotor, (ushort)rightMotor);
         report.AsSpan(2, 4).CopyTo(report.AsSpan(6, 4));
+        await stream.WriteAsync(report, token);
+    }
+
+    private async Task RunSwitch2RumbleLoopAsync(FileStream stream, int outputReportLength,
+        CancellationToken token)
+    {
+        var lastLeft = -1;
+        var lastRight = -1;
+        var lastWrite = 0L;
+        var refreshTicks = Stopwatch.Frequency * 12 / 1000;
+        try
+        {
+            while (!token.IsCancellationRequested)
+            {
+                var now = Stopwatch.GetTimestamp();
+                var testing = now < Volatile.Read(ref testRumbleUntil);
+                var enabled = settings.Enabled && settings.EnableRumble;
+                var left = enabled ? (testing ? 32768 : Volatile.Read(ref desiredLeftMotor)) : 0;
+                var right = enabled ? (testing ? 32768 : Volatile.Read(ref desiredRightMotor)) : 0;
+                var active = left != 0 || right != 0;
+                var changed = left != lastLeft || right != lastRight;
+                var elapsed = now - lastWrite;
+                var stopImmediately = !active && (lastLeft > 0 || lastRight > 0);
+                if (stopImmediately || (changed && (lastWrite == 0 || elapsed >= refreshTicks)) ||
+                    (active && elapsed >= refreshTicks))
+                {
+                    await WriteSwitch2RumbleAsync(stream, outputReportLength, left, right, token);
+                    lastLeft = left;
+                    lastRight = right;
+                    lastWrite = Stopwatch.GetTimestamp();
+                }
+                await Task.Delay(4, token);
+            }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (IOException) { }
+        catch (ObjectDisposedException) { }
+        finally
+        {
+            try
+            {
+                using var stopTimeout = new CancellationTokenSource(100);
+                await WriteSwitch2RumbleAsync(stream, outputReportLength, 0, 0, stopTimeout.Token);
+            }
+            catch (Exception ex) when (ex is IOException or OperationCanceledException or ObjectDisposedException) { }
+        }
+    }
+
+    private async Task WriteSwitch2RumbleAsync(FileStream stream, int outputReportLength,
+        int leftMotor, int rightMotor, CancellationToken token)
+    {
+        if (outputReportLength < 64)
+            throw new IOException("Switch 2 HID output report is shorter than 64 bytes.");
+        var report = new byte[outputReportLength];
+        var low = (ushort)Math.Clamp((long)leftMotor * Switch2MaximumRumbleAmplitude / ushort.MaxValue,
+            0, Switch2MaximumRumbleAmplitude);
+        var high = (ushort)Math.Clamp((long)rightMotor * Switch2MaximumRumbleAmplitude / ushort.MaxValue,
+            0, Switch2MaximumRumbleAmplitude);
+        Switch2Rumble.Encode(report,
+            (byte)((Interlocked.Increment(ref rumbleSequence) - 1) & 0x0F), high, low);
         await stream.WriteAsync(report, token);
     }
 

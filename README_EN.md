@@ -2,7 +2,7 @@
 
 [简体中文](README.md) | [English](README_EN.md) | [日本語](README_JA.md) | [한국어](README_KO.md)
 
-A Dalamud plugin that lets FFXIV recognize and use an official Nintendo Switch Pro Controller.
+A Dalamud plugin that lets FFXIV recognize and use official Nintendo Switch Pro and Switch 2 Pro Controllers.
 
 The plugin reads the controller directly and operates only inside the FFXIV process. No driver, virtual controller, or administrator access is required.
 
@@ -12,9 +12,10 @@ The plugin reads the controller directly and operates only inside the FFXIV proc
 
 ## Features
 
-- USB and Bluetooth support.
+- USB and Bluetooth support for the Switch Pro Controller.
+- USB support for the Switch 2 Pro Controller.
 - Automatic or manual selection of the Pro Controller to use.
-- Sticks, D-pad, face buttons, shoulder buttons, triggers, Plus/Minus, and stick clicks.
+- Configurable FFXIV button mappings for the Switch 2 Pro C, GL, and GR buttons.
 - Optional A/B and X/Y swaps.
 - Independent deadzone settings for both sticks.
 - Center and full-range calibration with 8 independently recorded endpoints for each stick.
@@ -39,9 +40,8 @@ Rumble is enabled by default. It can be disabled or tested from the settings win
 
 If full stick movement does not reach normal speed, run center calibration first. Then start full-range calibration, rotate both sticks around their complete outer edge, and select Finish.
 
-If the plugin cannot read the controller, disable Steam Input for FFXIV and reconnect it.
-
 ## Limitations
 
-- Official Nintendo Switch Pro Controllers only.
+- Official Nintendo Switch Pro and Switch 2 Pro Controllers only.
+- Bluetooth is not currently supported for the Switch 2 Pro Controller.
 - Gyroscope, accelerometer, and NFC data are ignored.

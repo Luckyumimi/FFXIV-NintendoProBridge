@@ -86,6 +86,22 @@ internal sealed class SettingsWindow : Window
         ("ja", "日本語"),
     ];
 
+    private static readonly (ExtraButtonMapping Value, string TextKey)[] ExtraButtonOptions =
+    [
+        (ExtraButtonMapping.None, "mappingNone"),
+        (ExtraButtonMapping.A, "mappingA"), (ExtraButtonMapping.B, "mappingB"),
+        (ExtraButtonMapping.X, "mappingX"), (ExtraButtonMapping.Y, "mappingY"),
+        (ExtraButtonMapping.L, "mappingL"), (ExtraButtonMapping.R, "mappingR"),
+        (ExtraButtonMapping.ZL, "mappingZL"), (ExtraButtonMapping.ZR, "mappingZR"),
+        (ExtraButtonMapping.LeftStick, "mappingLeftStick"),
+        (ExtraButtonMapping.RightStick, "mappingRightStick"),
+        (ExtraButtonMapping.Plus, "mappingPlus"), (ExtraButtonMapping.Minus, "mappingMinus"),
+        (ExtraButtonMapping.DPadUp, "mappingDPadUp"),
+        (ExtraButtonMapping.DPadDown, "mappingDPadDown"),
+        (ExtraButtonMapping.DPadLeft, "mappingDPadLeft"),
+        (ExtraButtonMapping.DPadRight, "mappingDPadRight"),
+    ];
+
     private readonly PluginSettings settings;
     private readonly ProControllerInput controller;
     private readonly Action save;
@@ -188,6 +204,25 @@ internal sealed class SettingsWindow : Window
         settings.SwapXy = swapXy;
         settings.LeftDeadzone = leftDeadzone;
         settings.RightDeadzone = rightDeadzone;
+
+        var switch2Selected = selectedDevice?.Kind == ControllerKind.Switch2Pro ||
+            (string.IsNullOrWhiteSpace(settings.SelectedDevicePath) &&
+             controller.ActiveControllerKind == ControllerKind.Switch2Pro);
+        if (switch2Selected)
+        {
+            ImGui.Separator();
+            ImGui.Text(T("switch2Mapping"));
+            ImGui.TextWrapped(T("switch2MappingGuide"));
+            var cMapping = settings.CButtonMapping;
+            var glMapping = settings.GlButtonMapping;
+            var grMapping = settings.GrButtonMapping;
+            changed |= DrawMappingCombo("C", ref cMapping);
+            changed |= DrawMappingCombo("GL", ref glMapping);
+            changed |= DrawMappingCombo("GR", ref grMapping);
+            settings.CButtonMapping = cMapping;
+            settings.GlButtonMapping = glMapping;
+            settings.GrButtonMapping = grMapping;
+        }
         if (changed) save();
 
         ImGui.Separator();
@@ -246,6 +281,30 @@ internal sealed class SettingsWindow : Window
             ? language()
             : settings.Language,
         key);
+
+    private bool DrawMappingCombo(string sourceButton, ref ExtraButtonMapping mapping)
+    {
+        var changed = false;
+        var currentMapping = mapping;
+        var current = ExtraButtonOptions.FirstOrDefault(option => option.Value == currentMapping);
+        var preview = T(string.IsNullOrEmpty(current.TextKey) ? "mappingNone" : current.TextKey);
+        ImGui.SetNextItemWidth(-1);
+        if (ImGui.BeginCombo($"{sourceButton}##mapping{sourceButton}", preview))
+        {
+            foreach (var option in ExtraButtonOptions)
+            {
+                var selected = mapping == option.Value;
+                if (ImGui.Selectable(T(option.TextKey), selected))
+                {
+                    mapping = option.Value;
+                    changed = true;
+                }
+                if (selected) ImGui.SetItemDefaultFocus();
+            }
+            ImGui.EndCombo();
+        }
+        return changed;
+    }
 }
 
 internal static class LocalizedText
@@ -272,6 +331,25 @@ internal static class LocalizedText
         ["swapXy"] = ["交换 X / Y", "Swap X / Y", "X / Y tauschen", "Inverser X / Y", "交換 X / Y", "X / Y 교체", "X / Y を入れ替える"],
         ["leftDeadzone"] = ["左摇杆死区", "Left stick deadzone", "Totzone linker Stick", "Zone morte du stick gauche", "左搖桿死區", "왼쪽 스틱 데드존", "左スティックのデッドゾーン"],
         ["rightDeadzone"] = ["右摇杆死区", "Right stick deadzone", "Totzone rechter Stick", "Zone morte du stick droit", "右搖桿死區", "오른쪽 스틱 데드존", "右スティックのデッドゾーン"],
+        ["switch2Mapping"] = ["Switch 2 Pro 附加键映射", "Switch 2 Pro extra button mapping", "Switch 2 Pro-Zusatztasten", "Touches supplémentaires Switch 2 Pro", "Switch 2 Pro 附加鍵映射", "Switch 2 Pro 추가 버튼 매핑", "Switch 2 Pro追加ボタン割り当て"],
+        ["switch2MappingGuide"] = ["为 C、GL 和 GR 选择最终幻想14中的手柄按键。", "Choose the FFXIV gamepad button produced by C, GL, and GR.", "FFXIV-Gamepad-Tasten für C, GL und GR auswählen.", "Choisissez les touches de manette FFXIV associées à C, GL et GR.", "為 C、GL 和 GR 選擇最終幻想14中的控制器按鍵。", "C, GL, GR에 연결할 FFXIV 게임패드 버튼을 선택하세요.", "C、GL、GRに割り当てるFFXIVゲームパッドボタンを選択します。"],
+        ["mappingNone"] = ["不映射", "Not mapped", "Nicht zugewiesen", "Non attribué", "不映射", "매핑 안 함", "割り当てなし"],
+        ["mappingA"] = ["A 键", "A button", "A-Taste", "Touche A", "A 鍵", "A 버튼", "Aボタン"],
+        ["mappingB"] = ["B 键", "B button", "B-Taste", "Touche B", "B 鍵", "B 버튼", "Bボタン"],
+        ["mappingX"] = ["X 键", "X button", "X-Taste", "Touche X", "X 鍵", "X 버튼", "Xボタン"],
+        ["mappingY"] = ["Y 键", "Y button", "Y-Taste", "Touche Y", "Y 鍵", "Y 버튼", "Yボタン"],
+        ["mappingL"] = ["L 键", "L button", "L-Taste", "Touche L", "L 鍵", "L 버튼", "Lボタン"],
+        ["mappingR"] = ["R 键", "R button", "R-Taste", "Touche R", "R 鍵", "R 버튼", "Rボタン"],
+        ["mappingZL"] = ["ZL 键", "ZL button", "ZL-Taste", "Touche ZL", "ZL 鍵", "ZL 버튼", "ZLボタン"],
+        ["mappingZR"] = ["ZR 键", "ZR button", "ZR-Taste", "Touche ZR", "ZR 鍵", "ZR 버튼", "ZRボタン"],
+        ["mappingLeftStick"] = ["L 摇杆键", "Left stick button", "Linker Stick-Klick", "Clic stick gauche", "L 搖桿鍵", "왼쪽 스틱 버튼", "Lスティックボタン"],
+        ["mappingRightStick"] = ["R 摇杆键", "Right stick button", "Rechter Stick-Klick", "Clic stick droit", "R 搖桿鍵", "오른쪽 스틱 버튼", "Rスティックボタン"],
+        ["mappingPlus"] = ["＋键", "+ button", "+-Taste", "Touche +", "＋鍵", "+ 버튼", "＋ボタン"],
+        ["mappingMinus"] = ["－键", "- button", "−-Taste", "Touche -", "－鍵", "- 버튼", "－ボタン"],
+        ["mappingDPadUp"] = ["十字键上", "D-pad up", "Steuerkreuz oben", "Croix haut", "十字鍵上", "십자키 위", "十字キー上"],
+        ["mappingDPadDown"] = ["十字键下", "D-pad down", "Steuerkreuz unten", "Croix bas", "十字鍵下", "십자키 아래", "十字キー下"],
+        ["mappingDPadLeft"] = ["十字键左", "D-pad left", "Steuerkreuz links", "Croix gauche", "十字鍵左", "십자키 왼쪽", "十字キー左"],
+        ["mappingDPadRight"] = ["十字键右", "D-pad right", "Steuerkreuz rechts", "Croix droite", "十字鍵右", "십자키 오른쪽", "十字キー右"],
         ["stickCalibration"] = ["摇杆校准", "Stick calibration", "Stick-Kalibrierung", "Calibrage des sticks", "搖桿校準", "스틱 보정", "スティック調整"],
         ["calibrationGuide"] = ["先让双摇杆回中进行回中校准，再开始满推校准并将两个摇杆沿外圈完整转动。", "Calibrate the centered sticks first. Then start full-range calibration and rotate both sticks around their full outer edge.", "Zuerst beide Sticks in Mittelstellung kalibrieren. Danach die Bereichskalibrierung starten und beide Sticks vollständig am Rand entlang drehen.", "Calibrez d’abord les sticks au repos, puis lancez le calibrage complet et faites tourner les deux sticks sur tout leur contour.", "先讓雙搖桿回中進行回中校準，再開始滿推校準並將兩個搖桿沿外圈完整轉動。", "먼저 두 스틱의 중앙을 보정한 뒤 전체 범위 보정을 시작하고 두 스틱을 바깥쪽 가장자리를 따라 완전히 돌리세요.", "まず両スティックを中央に戻して中央調整を行い、その後フルレンジ調整を開始して両方を外周いっぱいに回してください。"],
         ["calibrateCenter"] = ["回中校准", "Calibrate center", "Mitte kalibrieren", "Calibrer le centre", "回中校準", "중앙 보정", "中央を調整"],
@@ -310,6 +388,9 @@ public sealed class PluginSettings
     public float LeftDeadzone { get; set; } = .35f;
     public float RightDeadzone { get; set; } = .35f;
     public string? SelectedDevicePath { get; set; }
+    public ExtraButtonMapping CButtonMapping { get; set; }
+    public ExtraButtonMapping GlButtonMapping { get; set; }
+    public ExtraButtonMapping GrButtonMapping { get; set; }
     public StickCalibration LeftStickCalibration { get; set; } = new();
     public StickCalibration RightStickCalibration { get; set; } = new();
     public static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
@@ -327,6 +408,12 @@ public sealed class PluginSettings
         }
         catch (Exception ex) when (ex is IOException or JsonException) { return new(); }
     }
+}
+
+public enum ExtraButtonMapping
+{
+    None, A, B, X, Y, L, R, ZL, ZR, LeftStick, RightStick, Plus, Minus,
+    DPadUp, DPadDown, DPadLeft, DPadRight,
 }
 
 public sealed class StickCalibration
