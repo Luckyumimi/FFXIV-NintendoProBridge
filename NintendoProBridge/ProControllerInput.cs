@@ -35,6 +35,7 @@ internal sealed class ProControllerInput : IDisposable
     private long testRumbleUntil;
     private int packetNumber;
     private int rumbleSequence;
+    private int adaptationResetPending;
     private CalibrationMode calibrationMode;
     private CalibrationResult calibrationResult;
     private long centerCalibrationEnd;
@@ -102,6 +103,11 @@ internal sealed class ProControllerInput : IDisposable
             var state = Volatile.Read(ref snapshot);
             if (settings.Enabled && state.Connected)
             {
+                // Give FFXIV one native poll whenever a controller is newly opened, matching a
+                // silent off/on cycle of the adapter before translated input resumes.
+                if (Interlocked.Exchange(ref adaptationResetPending, 0) != 0)
+                    return pollHook.Original(device);
+
                 // Do not call the native poll here. The official Pro Controller (and Steam Input)
                 // can produce navigation side effects inside Poll itself, so overwriting its output
                 // after the call is already too late. Suppress it for FFXIV only and provide the
@@ -317,6 +323,7 @@ internal sealed class ProControllerInput : IDisposable
 
                 await using (device.Stream)
                 {
+                    Volatile.Write(ref adaptationResetPending, 1);
                     activeControllerKind = device.Kind;
                     lock (streamLock) currentStream = device.Stream;
                     Volatile.Write(ref lastError, null);
