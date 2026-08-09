@@ -2,7 +2,7 @@
   "Name": "Nintendo Pro Bridge",
   "Author": "Sachimi",
   "InternalName": "NintendoProBridge",
-  "AssemblyVersion": "0.6.1.0",
+  "AssemblyVersion": "0.6.2.0",
   "DalamudApiLevel": 15,
   "Punchline": "Nintendo Pro controller for FFXIV\n让最终幻想14支持SwitchPro手柄",
   "Description": "在游戏进程内直接将官方 Pro 手柄输入翻译为 FFXIV 手柄输入，不创建虚拟设备、不隐藏系统手柄。使用 /npro 打开设置。",
