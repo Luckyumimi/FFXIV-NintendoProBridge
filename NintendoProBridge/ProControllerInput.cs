@@ -338,6 +338,11 @@ internal sealed class ProControllerInput : IDisposable
                         await TryEnableVibrationAsync(device.Stream, device.OutputReportLength, token);
                         await Task.Delay(10, token);
                         await TryEnableFullInputReportsAsync(device.Stream, device.OutputReportLength, token);
+                        if (!await StabilizeSwitchProWakeAsync(device.Stream, device.InputReportLength,
+                                device.OutputReportLength, token))
+                        {
+                            continue;
+                        }
                     }
                     using var connectionCancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
                     var rumbleTask = device.Kind == ControllerKind.Switch2Pro
@@ -346,6 +351,10 @@ internal sealed class ProControllerInput : IDisposable
                         : RunRumbleLoopAsync(device.Stream, device.OutputReportLength,
                             connectionCancellation.Token);
                     var report = new byte[device.InputReportLength];
+                    // Switch Pro connections are initialized for the full 0x30 report format.
+                    // Bluetooth can still interleave 0x3F status reports; they are not gamepad input.
+                    var allowSimpleReports = device.Kind != ControllerKind.SwitchPro;
+                    var fullInputModeDeadline = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
                     try
                     {
                         while (!token.IsCancellationRequested)
@@ -356,9 +365,27 @@ internal sealed class ProControllerInput : IDisposable
                                 readTimeout.CancelAfter(TimeSpan.FromSeconds(2));
                                 var count = await device.Stream.ReadAsync(report, readTimeout.Token);
                                 if (count == 0) break;
+                                if (device.Kind == ControllerKind.SwitchPro)
+                                {
+                                    if (report[0] == 0x30)
+                                    {
+                                        fullInputModeDeadline = 0;
+                                    }
+                                    else if (report[0] == 0x3F)
+                                    {
+                                        if (fullInputModeDeadline == 0)
+                                        {
+                                            fullInputModeDeadline = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
+                                        }
+                                        else if (Stopwatch.GetTimestamp() >= fullInputModeDeadline)
+                                        {
+                                            break;
+                                        }
+                                    }
+                                }
                                 var decodedSuccessfully = device.Kind == ControllerKind.Switch2Pro
                                     ? TryDecodeSwitch2(report.AsSpan(0, count), out var decoded)
-                                    : TryDecode(report.AsSpan(0, count), out decoded);
+                                    : TryDecode(report.AsSpan(0, count), out decoded, allowSimpleReports);
                                 if (count > 0 && decodedSuccessfully)
                                     Volatile.Write(ref snapshot, decoded);
                             }
@@ -427,7 +454,7 @@ internal sealed class ProControllerInput : IDisposable
     private static int ScaleMotorSpeed(int percent) =>
         (Math.Clamp(percent, 0, 100) * ushort.MaxValue + 50) / 100;
 
-    private bool TryDecode(ReadOnlySpan<byte> report, out ControllerSnapshot state)
+    private bool TryDecode(ReadOnlySpan<byte> report, out ControllerSnapshot state, bool allowSimpleReport)
     {
         state = ControllerSnapshot.Disconnected;
         if (report.Length < 8) return false;
@@ -448,7 +475,7 @@ internal sealed class ProControllerInput : IDisposable
                     right, shared, left);
                 return true;
             }
-            case 0x3F:
+            case 0x3F when allowSimpleReport:
             {
                 var right = report[1]; var shared = report[2]; var left = report[3];
                 state = CreateState((report[4] - 128) / 127f, -(report[5] - 128) / 127f,
@@ -651,6 +678,36 @@ internal sealed class ProControllerInput : IDisposable
     {
         try { await stream.WriteAsync(CreateSubcommand(outputReportLength, 0x48, 0x01), token); }
         catch (IOException) { }
+    }
+
+    private async Task<bool> StabilizeSwitchProWakeAsync(FileStream stream, int inputReportLength,
+        int outputReportLength, CancellationToken token)
+    {
+        try
+        {
+            using var wakeTimeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+            wakeTimeout.CancelAfter(TimeSpan.FromSeconds(2));
+            var wakeReport = new byte[inputReportLength];
+            var count = await stream.ReadAsync(wakeReport, wakeTimeout.Token);
+            if (count == 0) return false;
+
+            // The first report proves that the controller is awake. Repeat the mode handshake now;
+            // commands sent immediately after opening can be ignored while Bluetooth is still resuming.
+            await Task.Delay(50, token);
+            await TryEnableVibrationAsync(stream, outputReportLength, token);
+            await Task.Delay(10, token);
+            await TryEnableFullInputReportsAsync(stream, outputReportLength, token);
+            await Task.Delay(50, token);
+            return true;
+        }
+        catch (OperationCanceledException) when (!token.IsCancellationRequested)
+        {
+            return false;
+        }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException)
+        {
+            return false;
+        }
     }
 
     private byte[] CreateSubcommand(int outputReportLength, byte subcommand, byte argument)
