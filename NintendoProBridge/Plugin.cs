@@ -73,6 +73,7 @@ public sealed class Plugin : IDalamudPlugin
 internal sealed class SettingsWindow : Window
 {
     private const string WindowId = "###NintendoProBridgeSettings";
+    private const string DonationAddress = "TF3TK5jT6dBVqY3JTpGJaVmzhBzryq8DhN";
 
     private static readonly (string Code, string Name)[] LanguageOptions =
     [
@@ -106,6 +107,7 @@ internal sealed class SettingsWindow : Window
     private readonly ProControllerInput controller;
     private readonly Action save;
     private readonly Func<string> language;
+    private bool donationCopied;
 
     public SettingsWindow(PluginSettings settings, ProControllerInput controller, Action save, Func<string> language)
         : base(LocalizedText.Get(
@@ -274,6 +276,21 @@ internal sealed class SettingsWindow : Window
 
         ImGui.Spacing();
         ImGui.TextDisabled(T("command"));
+
+        ImGui.Separator();
+        ImGui.Text(T("donation"));
+        ImGui.TextWrapped(T("donationGuide"));
+        ImGui.Text($"{T("donationNetwork")}: TRON (TRC-20) · {T("donationCurrency")}: USDT");
+        var donationAddress = DonationAddress;
+        ImGui.InputText("##donationAddress", ref donationAddress, DonationAddress.Length + 1,
+            ImGuiInputTextFlags.ReadOnly);
+        ImGui.SameLine();
+        if (ImGui.Button(T("copyDonationAddress")))
+        {
+            ImGui.SetClipboardText(DonationAddress);
+            donationCopied = true;
+        }
+        if (donationCopied) ImGui.TextColored(new Vector4(.3f, 1f, .45f, 1f), T("donationCopied"));
     }
 
     private string T(string key) => LocalizedText.Get(
@@ -365,6 +382,12 @@ internal static class LocalizedText
         ["calibrationReset"] = ["摇杆校准已重置。", "Stick calibration reset.", "Stick-Kalibrierung zurückgesetzt.", "Calibrage des sticks réinitialisé.", "搖桿校準已重設。", "스틱 보정이 초기화되었습니다.", "スティック調整をリセットしました。"],
         ["calibrationDisconnected"] = ["手柄已断开，校准已取消。", "Controller disconnected; calibration cancelled.", "Controller getrennt; Kalibrierung abgebrochen.", "Manette déconnectée ; calibrage annulé.", "控制器已中斷連線，校準已取消。", "컨트롤러 연결이 끊겨 보정이 취소되었습니다.", "コントローラーが切断されたため、調整を中止しました。"],
         ["command"] = ["设置命令：/npro", "Settings command: /npro", "Einstellungsbefehl: /npro", "Commande des paramètres : /npro", "設定指令：/npro", "설정 명령어: /npro", "設定コマンド：/npro"],
+        ["donation"] = ["支持开发", "Support development", "Entwicklung unterstützen", "Soutenir le développement", "支持開發", "개발 후원", "開発を支援"],
+        ["donationGuide"] = ["如果这个插件对你有帮助，可以使用 USDT（TRON）支持开发。转账前请确认网络为 TRON（TRC-20）。", "If this plugin helps you, you can support development with USDT on TRON. Confirm the network is TRON (TRC-20) before sending.", "Wenn dieses Plugin hilfreich ist, kannst du die Entwicklung mit USDT über TRON unterstützen. Vor dem Senden das Netzwerk TRON (TRC-20) prüfen.", "Si ce plugin vous est utile, vous pouvez soutenir son développement avec de l’USDT sur TRON. Vérifiez le réseau TRON (TRC-20) avant l’envoi.", "如果這個插件對你有幫助，可以使用 USDT（TRON）支持開發。轉帳前請確認網路為 TRON（TRC-20）。", "이 플러그인이 도움이 되었다면 TRON의 USDT로 개발을 후원할 수 있습니다. 전송 전에 네트워크가 TRON(TRC-20)인지 확인하세요.", "このプラグインが役立った場合は、TRON上のUSDTで開発を支援できます。送金前にネットワークがTRON（TRC-20）であることを確認してください。"],
+        ["donationNetwork"] = ["网络", "Network", "Netzwerk", "Réseau", "網路", "네트워크", "ネットワーク"],
+        ["donationCurrency"] = ["币种", "Currency", "Währung", "Devise", "幣種", "통화", "通貨"],
+        ["copyDonationAddress"] = ["复制地址", "Copy address", "Adresse kopieren", "Copier l’adresse", "複製地址", "주소 복사", "アドレスをコピー"],
+        ["donationCopied"] = ["地址已复制。", "Address copied.", "Adresse kopiert.", "Adresse copiée.", "地址已複製。", "주소가 복사되었습니다.", "アドレスをコピーしました。"],
     };
 
     public static string Get(string language, string key)
