@@ -1,5 +1,6 @@
 using System.Numerics;
 using System.Text.Json;
+using System.Diagnostics;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Game.Command;
 using Dalamud.Interface.Windowing;
@@ -128,6 +129,14 @@ internal sealed class SettingsWindow : Window
     {
         WindowName = T("windowTitle") + WindowId;
         ImGui.TextWrapped(T("intro"));
+        ImGui.SameLine();
+        var discordButtonWidth = ImGui.CalcTextSize("Discord").X + ImGui.GetStyle().FramePadding.X * 2;
+        ImGui.SetCursorPosX(ImGui.GetWindowContentRegionMax().X - discordButtonWidth);
+        ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(86f / 255f, 98f / 255f, 246f / 255f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(101f / 255f, 112f / 255f, 255f / 255f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.ButtonActive, new Vector4(70f / 255f, 81f / 255f, 220f / 255f, 1f));
+        if (ImGui.Button(T("discord"))) OpenDiscord();
+        ImGui.PopStyleColor(3);
         ImGui.Spacing();
         ImGui.TextColored(controller.IsConnected
                 ? new Vector4(.3f, 1f, .45f, 1f)
@@ -283,7 +292,6 @@ internal sealed class SettingsWindow : Window
 
         ImGui.Separator();
         ImGui.Text(T("donation"));
-        ImGui.TextWrapped(T("donationGuide"));
         ImGui.Text($"{T("donationNetwork")}: TRON (TRC-20) · {T("donationCurrency")}: USDT");
         var donationAddress = DonationAddress;
         ImGui.InputText("##donationAddress", ref donationAddress, DonationAddress.Length + 1,
@@ -302,6 +310,22 @@ internal sealed class SettingsWindow : Window
             ? language()
             : settings.Language,
         key);
+
+    private static void OpenDiscord()
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "https://discord.gg/DnJ5VxEr8B",
+                UseShellExecute = true,
+            });
+        }
+        catch
+        {
+            // Opening an external link must never affect the plugin UI.
+        }
+    }
 
     private bool DrawMappingCombo(string sourceButton, ref ExtraButtonMapping mapping)
     {
@@ -346,6 +370,7 @@ internal static class LocalizedText
         ["language"] = ["界面语言", "Interface language", "Oberflächensprache", "Langue de l’interface", "介面語言", "인터페이스 언어", "表示言語"],
         ["autoLanguage"] = ["跟随游戏", "Follow game language", "Spielsprache verwenden", "Suivre la langue du jeu", "跟隨遊戲", "게임 언어 따르기", "ゲーム言語に合わせる"],
         ["enabled"] = ["启用手柄适配", "Enable controller support", "Controller-Unterstützung aktivieren", "Activer la prise en charge de la manette", "啟用控制器適配", "컨트롤러 지원 활성화", "コントローラー対応を有効にする"],
+        ["discord"] = ["Discord", "Discord", "Discord", "Discord", "Discord", "Discord", "Discord"],
         ["focusOnly"] = ["仅在游戏窗口焦点时有效", "Only when the game window is focused", "Nur bei fokussiertem Spielfenster", "Uniquement lorsque la fenêtre du jeu est active", "僅在遊戲視窗取得焦點時有效", "게임 창에 포커스가 있을 때만 적용", "ゲームウィンドウがフォーカスされているときのみ有効"],
         ["enableRumble"] = ["启用震动", "Enable rumble", "Vibration aktivieren", "Activer les vibrations", "啟用震動", "진동 활성화", "振動を有効にする"],
         ["testRumble"] = ["测试", "Test", "Testen", "Tester", "測試", "테스트", "テスト"],
