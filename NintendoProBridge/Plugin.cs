@@ -131,11 +131,12 @@ internal sealed class SettingsWindow : Window
         ImGui.TextWrapped(T("intro"));
         ImGui.SameLine();
         var discordButtonWidth = ImGui.CalcTextSize("Discord").X + ImGui.GetStyle().FramePadding.X * 2;
-        ImGui.SetCursorPosX(ImGui.GetWindowContentRegionMax().X - discordButtonWidth);
+        var discordButtonSize = new Vector2(discordButtonWidth * 2f, ImGui.GetFrameHeight() * 2f);
+        ImGui.SetCursorPosX(ImGui.GetWindowContentRegionMax().X - discordButtonSize.X);
         ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(86f / 255f, 98f / 255f, 246f / 255f, 1f));
         ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(101f / 255f, 112f / 255f, 255f / 255f, 1f));
         ImGui.PushStyleColor(ImGuiCol.ButtonActive, new Vector4(70f / 255f, 81f / 255f, 220f / 255f, 1f));
-        if (ImGui.Button(T("discord"))) OpenDiscord();
+        if (ImGui.Button(T("discord"), discordButtonSize)) OpenDiscord();
         ImGui.PopStyleColor(3);
         ImGui.Spacing();
         ImGui.TextColored(controller.IsConnected
