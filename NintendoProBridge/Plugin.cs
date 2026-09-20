@@ -166,6 +166,7 @@ internal sealed class SettingsWindow : Window
         ImGui.Separator();
         var changed = false;
         var enabled = settings.Enabled;
+        var focusOnly = settings.FocusOnly;
         var enableRumble = settings.EnableRumble;
         var swapAb = settings.SwapAb;
         var swapXy = settings.SwapXy;
@@ -191,6 +192,8 @@ internal sealed class SettingsWindow : Window
             ImGui.EndCombo();
         }
         changed |= ImGui.Checkbox(T("enabled"), ref enabled);
+        ImGui.SameLine();
+        changed |= ImGui.Checkbox(T("focusOnly"), ref focusOnly);
         changed |= ImGui.Checkbox(T("enableRumble"), ref enableRumble);
         ImGui.SameLine();
         if (!controller.IsConnected || !enabled || !enableRumble) ImGui.BeginDisabled();
@@ -201,6 +204,7 @@ internal sealed class SettingsWindow : Window
         changed |= ImGui.SliderFloat(T("leftDeadzone"), ref leftDeadzone, 0f, .5f, "%.2f");
         changed |= ImGui.SliderFloat(T("rightDeadzone"), ref rightDeadzone, 0f, .5f, "%.2f");
         settings.Enabled = enabled;
+        settings.FocusOnly = focusOnly;
         settings.EnableRumble = enableRumble;
         settings.SwapAb = swapAb;
         settings.SwapXy = swapXy;
@@ -342,6 +346,7 @@ internal static class LocalizedText
         ["language"] = ["界面语言", "Interface language", "Oberflächensprache", "Langue de l’interface", "介面語言", "인터페이스 언어", "表示言語"],
         ["autoLanguage"] = ["跟随游戏", "Follow game language", "Spielsprache verwenden", "Suivre la langue du jeu", "跟隨遊戲", "게임 언어 따르기", "ゲーム言語に合わせる"],
         ["enabled"] = ["启用手柄适配", "Enable controller support", "Controller-Unterstützung aktivieren", "Activer la prise en charge de la manette", "啟用控制器適配", "컨트롤러 지원 활성화", "コントローラー対応を有効にする"],
+        ["focusOnly"] = ["仅在游戏窗口焦点时有效", "Only when the game window is focused", "Nur bei fokussiertem Spielfenster", "Uniquement lorsque la fenêtre du jeu est active", "僅在遊戲視窗取得焦點時有效", "게임 창에 포커스가 있을 때만 적용", "ゲームウィンドウがフォーカスされているときのみ有効"],
         ["enableRumble"] = ["启用震动", "Enable rumble", "Vibration aktivieren", "Activer les vibrations", "啟用震動", "진동 활성화", "振動を有効にする"],
         ["testRumble"] = ["测试", "Test", "Testen", "Tester", "測試", "테스트", "テスト"],
         ["swapAb"] = ["交换 A / B", "Swap A / B", "A / B tauschen", "Inverser A / B", "交換 A / B", "A / B 교체", "A / B を入れ替える"],
@@ -405,6 +410,7 @@ public sealed class PluginSettings
 {
     public string Language { get; set; } = "auto";
     public bool Enabled { get; set; } = true;
+    public bool FocusOnly { get; set; }
     public bool EnableRumble { get; set; } = true;
     public bool SwapAb { get; set; }
     public bool SwapXy { get; set; }

@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using Dalamud.Hooking;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.System.Input;
@@ -47,6 +48,12 @@ internal sealed class ProControllerInput : IDisposable
     private readonly int[] leftRangeRadii = new int[8];
     private readonly int[] rightRangeRadii = new int[8];
     private bool disposed;
+
+    [DllImport("user32.dll")]
+    private static extern nint GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(nint windowHandle, out uint processId);
 
     public bool IsConnected => Volatile.Read(ref snapshot).Connected;
     public ControllerKind ActiveControllerKind => activeControllerKind;
@@ -101,7 +108,7 @@ internal sealed class ProControllerInput : IDisposable
         try
         {
             var state = Volatile.Read(ref snapshot);
-            if (settings.Enabled && state.Connected)
+            if (settings.Enabled && state.Connected && (!settings.FocusOnly || IsGameWindowFocused()))
             {
                 // Give FFXIV one native poll whenever a controller is newly opened, matching a
                 // silent off/on cycle of the adapter before translated input resumes.
@@ -121,6 +128,14 @@ internal sealed class ProControllerInput : IDisposable
             // Input hooks must never take the game down. Fall back to the game's original poll.
         }
         return pollHook.Original(device);
+    }
+
+    private static bool IsGameWindowFocused()
+    {
+        var foregroundWindow = GetForegroundWindow();
+        if (foregroundWindow == nint.Zero) return false;
+        GetWindowThreadProcessId(foregroundWindow, out var foregroundProcessId);
+        return foregroundProcessId == (uint)Environment.ProcessId;
     }
 
     private unsafe void VibrationDetour(PadDevice* device, int rightMotorSpeed, int leftMotorSpeed)
